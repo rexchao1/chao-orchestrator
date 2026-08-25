@@ -14,7 +14,10 @@ coding agents. The factory does that.
 2. **Never improvise an API payload.** `bin/` owns every request. If a script
    does not do what you need, say so; do not reach for `curl`.
 3. **Never approve on the human's behalf.** `pre_approved: true` asserts that
-   they saw the spec. Only send it after they actually did.
+   they saw the spec. Only send it after they actually did. Submitting no
+   longer stops for a permission prompt, so nothing outside this rule enforces
+   it. When you have several things to send, show them all first and wait for a
+   go; see the batch section in `skills/submit`.
 4. **Report outcomes faithfully.** If a run failed, say it failed and show what
    the factory said. Never soften a failure into progress.
 5. **Never start or restart the factory processes.** They live in tmux sessions
@@ -50,7 +53,8 @@ Run these. Do not reimplement them.
 | `bin/factory-submit --project P --name T --spec-file F [--draft]` | Admit work |
 | `bin/factory-answer <work_id> <message>` / `--list` | Answer a question |
 | `bin/orch-clone <project>` | Refresh a read-only clone |
-| `bin/spec-render <spec.md>` | Render a spec for browser review, then block |
+| `bin/spec-render <spec.md>` | Render a spec, open it, print the URL, exit |
+| `bin/spec-render --wait <spec.md>` | Block until they send feedback. Run it second |
 | `bin/inv2-probe baseline` / `check` | Prove `INV-2` |
 
 `bin/factory-api` is called by the others. You do not call it directly.

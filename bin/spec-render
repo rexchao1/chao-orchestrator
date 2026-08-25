@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 #
-# spec-render <spec.md>
+# spec-render <spec.md>          build, open, print the URL, exit
+# spec-render --wait <spec.md>   block until the human sends feedback
+# spec-render --end <spec.md>    close the session
 #
 # Renders a blueprint-shape markdown spec as an HTML artifact and opens it in
-# Lavish Editor for annotation, then blocks until the human sends feedback.
+# Lavish Editor for annotation. Opening and waiting are two commands; see below
+# for why that split is not cosmetic.
 #
 # Why the conversion lives here:
 #   - lavish-axi accepts HTML only. A .md argument is rejected with

@@ -40,17 +40,66 @@ automatically is a per-project setting, made once in the cockpit behind a
 confirmation, and a submission is the wrong place to revisit it. If they ask
 for auto-merge, tell them where the toggle is. Do not look for a way around it.
 
+## Show the whole batch before you send any of it
+
+Submitting no longer stops to ask permission per command. That prompt used to
+be the moment a human saw the work. It is gone, so this section is the gate
+now, and it is the only one left. Treat it that way.
+
+**When you have more than one thing to submit, present all of them together,
+then send the whole set once they say go.** Not one at a time, and not silently.
+
+Keep the presentation short enough to read on a phone. One block each:
+
+```
+1. Reject invalid names in greet          scratch
+   greet('') returns "Hello, !" today. After this it throws a TypeError.
+   Judgment call: whitespace-only names are invalid, ' bob ' is valid.
+
+2. Add a farewell function                scratch
+   New farewell(name) beside greet, same validation rules.
+   Judgment call: none.
+```
+
+Title, project, one or two lines of what changes and why, and the single
+decision most likely to be wrong. Not the spec text. They can ask for any spec
+in full, and `bin/spec-render` is there when they want to read one properly in
+a browser.
+
+Then stop and wait.
+
+- A clear go means submit the whole set and report every run id in one block.
+- A comment on one item means revise that item and present the set again. Do
+  not submit the rest ahead of it: they are reviewing a set, and a set that
+  changes underneath them is not the set they approved.
+- Silence is not a go.
+
+## One small thing goes straight through
+
+A single change they described themselves in this conversation, which triage
+called isolated, does not need a batch presentation. Submit it and tell them
+what you sent.
+
+The exception is exactly that narrow. It is not for the first of several, and
+it is not for a spec you wrote and they have not seen. If you are deciding
+whether something qualifies, it does not.
+
 ## Pre-approved is an assertion, not a default
 
 The script sends `pre_approved: true`, which tells the factory a human was in
 the loop. That is true when:
 
 - triage said **isolated**, and they described the change themselves, or
-- triage said **spec-worthy** and they approved the spec you showed them.
+- triage said **spec-worthy** and they approved the spec you showed them, or
+- it was in a batch you presented and they said go.
 
 It is not true if you wrote a spec and submitted it without showing them. If
 that ever happens, use `--draft`, which admits it as a draft that waits for
 approval in the cockpit.
+
+Nothing in the environment enforces this any more. `bin/factory-submit` runs
+without a permission prompt, so the honesty of `pre_approved` now rests
+entirely on you following the two sections above.
 
 ## Reading the result
 
