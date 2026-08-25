@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+#
+# factory-submit --project NAME --name TITLE --spec-file PATH
+#                [--draft] [--pipeline NAME] [--request-key KEY]
+#
+# Builds and sends protocol.AdmitWorkRequest (internal/protocol/tasks.go:255-266).
+# A model never writes this payload. Things that would silently go wrong if it did:
+#
+#   - runtime defaults to "codex" server side. The only worker advertises
+#     "claude-code", so an omitted runtime produces Work nothing can claim.
+#   - decodeJSON uses DisallowUnknownFields. One extra key is 400 malformed_json.
+#   - request_key must be <= 200 bytes and must not start with "work:" or
+#     "schedule:", which are reserved prefixes.
+#   - repository must be exactly three slash separated parts beginning
+#     github.com. A URL form has five and is rejected.
+#   - The effective spec ceiling is well under the documented 64 KiB because
+#     admission reserves room in the 72 KiB agent prompt for a question, an
+#     answer, and history. We refuse at 32 KiB locally rather than let the
+#     server return an opaque agent_prompt_too_large.
+#   - delivery is never sent, and there is no flag for it. Admission inherits
+#     the repository's default_delivery whenever the field is absent, and that
+#     project setting is the only gate INV-8 has. A flag here would let a prompt
+#     turn auto merge on for a single submission, behind the cockpit's back.
+#
+# Exit: 0 admitted, 1 API error, 2 usage or local validation failure.
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+API="$BIN/factory-api"
+PROJECTS="$ORCH_HOME/config/projects.tsv"
+STATE="$ORCH_HOME/state/submissions.tsv"
+
+MAX_SPEC_BYTES=32768
+
+usage() {
+  echo "usage: factory-submit --project NAME --name TITLE --spec-file PATH [--draft] [--pipeline NAME] [--request-key KEY]" >&2
+  exit 2
+}
+
+project=""; title=""; spec_file=""; pipeline_name=""; request_key=""
+pre_approved="true"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --project)     project="${2:-}"; shift 2 ;;
+    --name)        title="${2:-}"; shift 2 ;;
+    --spec-file)   spec_file="${2:-}"; shift 2 ;;
+    --pipeline)    pipeline_name="${2:-}"; shift 2 ;;
+    --request-key) request_key="${2:-}"; shift 2 ;;
+    --draft)       pre_approved="false"; shift ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
+
+[ -n "$project" ] && [ -n "$title" ] && [ -n "$spec_file" ] || usage
+
+if [ ! -f "$spec_file" ]; then
+  echo "error: no such spec file: $spec_file" >&2
+  exit 2
+fi
+
+if [ ! -f "$PROJECTS" ]; then
+  echo "error: no project map at $PROJECTS" >&2
+  echo "hint: cp config/projects.tsv.example config/projects.tsv and edit it" >&2
+  exit 2
+fi
+
+repository="$(awk -F'\t' -v p="$project" '$1 == p { print $2; exit }' "$PROJECTS")"
+if [ -z "$repository" ]; then
+  echo "error: project '$project' is not in $PROJECTS" >&2
+  echo "known projects:" >&2
+  awk -F'\t' '!/^#/ && NF > 1 { print "  " $1 }' "$PROJECTS" >&2
+  exit 2
+fi
+
+if [ -z "$pipeline_name" ]; then
+  pipeline_name="$(awk -F'\t' -v p="$project" '$1 == p { print $3; exit }' "$PROJECTS")"
+fi
+
+# A pipeline is named here and numbered by the factory. Resolving it through
+# the API means a skill can say "the reviewed pipeline" without a model ever
+# writing a UUID from memory, which is the same reason bin/ owns every payload.
+# Gap 10 and Gap 11 make the three stage shape mandatory for reviewed work:
+# a stage that reports the outcome loses its result text, and only the final
+# stage is told the publish branch.
+pipeline_id=""
+if [ -n "$pipeline_name" ]; then
+  pipelines="$("$API" GET /api/v1/pipelines)" || exit 1
+  pipeline_id="$(printf '%s' "$pipelines" \
+    | jq -r --arg n "$pipeline_name" '.pipelines[]? | select(.name == $n) | .id' | head -n1)"
+  if [ -z "$pipeline_id" ]; then
+    echo "error: no pipeline named '$pipeline_name' on this factory" >&2
+    echo "known pipelines:" >&2
+    printf '%s' "$pipelines" | jq -r '.pipelines[]? | "  " + .name' >&2
+    exit 2
+  fi
+fi
+
+# AgentUpdatePromptContract (internal/protocol/prompt.go:15) already tells the
+# agent that it must report, and reaches it on every attempt. What it does not
+# spell out is the vocabulary, or that there is no per command help. Gap 6 is
+# closed, so `factory` now resolves on the agent's PATH and this block no
+# longer has to name an absolute path.
+read -r -d '' REPORTING_BLOCK <<'BLOCK'
+
+### Reporting, required
+
+    factory update --status STATUS --message "..."
+
+Before you exit, report exactly one outcome. There is no per command help, so
+do not run `factory update --help`; it exits 2 without printing flags.
+
+- `--status ready` when the work is done. Requires `--pr` with the pull request
+  URL. Commit and push first.
+- `--status needs-input` when the spec does not contain a decision you need.
+  Commit and push everything to the Factory publish branch first, leave the
+  worktree clean, and put the question itself in `--message`.
+- `--status no-change` when the correct result is an empty diff.
+- `--status failed` when you cannot proceed.
+
+`--status running` is optional progress and does not end the attempt.
+`--message` is always required and must be non-empty.
+BLOCK
+
+spec_body="$(cat "$spec_file")"
+spec_full="$spec_body$REPORTING_BLOCK"
+
+spec_bytes="$(printf '%s' "$spec_full" | wc -c | tr -d ' ')"
+if [ "$spec_bytes" -gt "$MAX_SPEC_BYTES" ]; then
+  echo "error: spec is too large: $spec_bytes bytes, limit $MAX_SPEC_BYTES" >&2
+  echo "hint: admission reserves room in the 72 KiB agent prompt for a question," >&2
+  echo "      an answer, and history, so the usable spec budget is far under 64 KiB." >&2
+  echo "      Split this into smaller slivers, which is the right answer anyway." >&2
+  exit 2
+fi
+
+if [ -z "$request_key" ]; then
+  request_key="$(uuidgen | tr 'A-Z' 'a-z')"
+fi
+
+case "$request_key" in
+  work:*|schedule:*)
+    echo "error: request key must not begin with 'work:' or 'schedule:'; both are reserved" >&2
+    exit 2 ;;
+esac
+if [ "${#request_key}" -gt 200 ]; then
+  echo "error: request key is longer than 200 bytes" >&2
+  exit 2
+fi
+
+# jq builds the body so every string is escaped correctly. --arg is a string
+# always; --argjson is used only for the boolean.
+payload="$(jq -nc \
+  --arg  rk "$request_key" \
+  --arg  repo "$repository" \
+  --arg  name "$title" \
+  --arg  spec "$spec_full" \
+  --arg  pipeline "$pipeline_id" \
+  --argjson pre "$pre_approved" \
+  '{
+     request_key: $rk,
+     repository:  $repo,
+     name:        $name,
+     spec:        $spec,
+     runtime:     "claude-code",
+     source:      "orchestrator",
+     pre_approved: $pre
+   }
+   + (if $pipeline == "" then {} else {pipeline_id: $pipeline} end)')"
+
+response="$("$API" POST /api/v1/work "$payload")" || exit 1
+
+run_id="$(printf  '%s' "$response" | jq -r '.run_id')"
+work_id="$(printf '%s' "$response" | jq -r '.work_ids[0]')"
+state="$(printf   '%s' "$response" | jq -r '.state')"
+
+mkdir -p "$(dirname "$STATE")"
+printf '%s\t%s\t%s\t%s\t%s\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$request_key" "$run_id" "$work_id" "$title" >> "$STATE"
+
+echo "run   $run_id"
+echo "work  $work_id"
+echo "state $state"
+
+# blocked is a scheduling state, not a gate, and not an error. It means no
+# worker was eligible or the concurrency slot was taken. It will be claimed.
+if [ "$state" = "blocked" ]; then
+  echo "note  blocked means no worker was free at admission, not that it was rejected" >&2
+fi
