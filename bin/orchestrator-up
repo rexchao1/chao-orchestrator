@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#
+# orchestrator-up
+#
+# Creates the detached tmux session that is the orchestrator. Safe to run over
+# SSH, which is the point.
+#
+# What it checks, and why each check exists:
+#
+#   1. The tmux SERVER must have GUI provenance. Claude Code reads the macOS
+#      Keychain, and only a process descended from a Terminal.app-started
+#      server can. A session created over SSH inside a good server inherits
+#      that; a session that STARTS a new server over SSH does not, and claude
+#      silently comes up logged out.
+#
+#   2. At least one other session must already exist. exit-empty is on, so if
+#      the server had no sessions it is not running, and creating one now would
+#      start a fresh server with our own (SSH) provenance. This check is what
+#      makes rule 1 hold in practice.
+#
+# What it deliberately does NOT check: SSH_CONNECTION. start-factory.sh guards
+# on it correctly, because that script starts the server. Copying that guard
+# here would be wrong: tmux's update-environment sets SSH_CONNECTION inside any
+# session created over SSH, including ones with perfectly good keychain access.
+# Keychain access is governed by the security session, not by an env var.
+set -uo pipefail
+
+SESSION="${ORCH_SESSION:-orchestrator}"
+ORCH_HOME="${ORCH_HOME:-$HOME/Projects/chao-orchestrator}"
+
+# A fixed id, so the conversation is the same one across detach, reattach, and
+# reboot. Never use --bare: its own help says it never reads the keychain and
+# takes auth strictly from ANTHROPIC_API_KEY, which would defeat all of this.
+SESSION_UUID="${ORCH_SESSION_UUID:-6f1b9d24-7c3e-4a58-9b02-1d5e8c4a7f30}"
+
+# claude --resume refuses an id it has never seen: measured, it exits 1 with
+# "No conversation found with session ID". So the very first launch has to
+# create the conversation with --session-id, and every launch after it resumes.
+# The transcript lands at ~/.claude/projects/<slug>/<uuid>.jsonl, and its
+# presence is the only durable evidence of which case we are in.
+CLAUDE_PROJECTS="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
+
+if [ "$#" -ne 0 ]; then
+  echo "usage: orchestrator-up" >&2
+  exit 2
+fi
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "already up. attach with: tmux attach -t $SESSION"
+  exit 0
+fi
+
+gui_env="$(tmux showenv -g 2>/dev/null || true)"
+if ! printf '%s' "$gui_env" | grep -qE 'TERM_PROGRAM=Apple_Terminal|__CFBundleIdentifier=com\.apple\.Terminal'; then
+  echo "error: the running tmux server was not started from Terminal.app." >&2
+  echo "       Claude Code could not read the macOS Keychain inside it, and would" >&2
+  echo "       come up logged out without saying so." >&2
+  echo "fix:   on the Mac, in Terminal.app, run ChaoFactory's scripts/start-factory.sh" >&2
+  exit 1
+fi
+
+sessions="$(tmux ls 2>/dev/null | grep -c ':' || true)"
+if [ "${sessions:-0}" -eq 0 ]; then
+  echo "error: no tmux session exists, so no tmux server is running." >&2
+  echo "       exit-empty is on, so creating one now would start a NEW server" >&2
+  echo "       with this SSH session's provenance, and the keychain would be" >&2
+  echo "       unreachable inside it." >&2
+  echo "fix:   on the Mac, in Terminal.app, run ChaoFactory's scripts/start-factory.sh" >&2
+  exit 1
+fi
+
+if compgen -G "$CLAUDE_PROJECTS/*/$SESSION_UUID.jsonl" >/dev/null 2>&1; then
+  claude_args="--resume $SESSION_UUID"
+  echo "resuming the existing orchestrator conversation"
+else
+  claude_args="--session-id $SESSION_UUID"
+  echo "no orchestrator conversation yet; creating one with a fixed id"
+fi
+
+tmux new-session -d -s "$SESSION" -c "$ORCH_HOME" \
+  "zsh -lc 'cd $ORCH_HOME && exec claude $claude_args'"
+
+# Belt and braces: with the orchestrator present the server has one more reason
+# to stay alive, but do not let it be the last one holding it up either.
+tmux set-option -s exit-empty off 2>/dev/null || true
+
+echo "orchestrator is up"
+echo "attach from anywhere:  ssh factorymac -t 'zsh -lc \"tmux attach -t $SESSION\"'"
