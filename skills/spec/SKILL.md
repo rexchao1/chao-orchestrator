@@ -74,18 +74,35 @@ Render in the browser when **any** of these holds:
 
 Otherwise print the spec in the conversation and take approval there.
 
-To render:
+Rendering is two commands, and the order matters.
 
 ```bash
-bin/spec-render /tmp/<slug>.md
+bin/spec-render state/specs/<slug>.md
 ```
 
-This blocks until they send feedback or end the session. That is expected and
-correct: one spec at a time. Do not background it, and do not tell them it is
-being watched while you are not actually polling.
+That builds the page, opens the session, prints a review URL and returns. **Say
+that URL to them in your next message.** They cannot open a link they have not
+been shown, and your shell output does not reach them on its own.
 
-Apply their feedback to the markdown, which is the contract. The HTML is only a
-view of it and is never submitted.
+Then, and only then:
+
+```bash
+bin/spec-render --wait state/specs/<slug>.md
+```
+
+That blocks until they send feedback or end the session. Expect it to sit there
+for minutes: that is the review happening, not a hang. One spec at a time. Do
+not background it, and never tell them it is being watched while you are not
+actually polling.
+
+If the wait dies, or your session is restarted under it, nothing is lost.
+Re-run `--wait`, or `lavish-axi poll .lavish/<slug>.html` directly. Queued
+feedback survives.
+
+Apply their feedback to the markdown, which is the contract, and re-run
+`bin/spec-render` on it so the page they read and the file that gets submitted
+stay the same thing. Never hand-edit the HTML: that is exactly how the two
+drift apart.
 
 ## Then
 

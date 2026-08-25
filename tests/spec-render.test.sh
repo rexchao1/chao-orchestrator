@@ -56,6 +56,35 @@ assert_contains "renders inline code"       "<code>"        "$body"
 
 # The markdown spec is the contract. The HTML must not be what gets submitted.
 assert_contains "prints the review URL" "$LAVISH_AXI_HOST:4387" "$out"
-assert_contains "returns the human's feedback" "put the toggle in settings" "$out"
+
+# Opening must NOT block. It used to print the URL and then poll in the same
+# command, so through an agent's shell tool the URL stayed buffered until the
+# review was over and the reviewer never saw a link. Opening returns; waiting
+# is a second command.
+if grep -q 'put the toggle in settings' <<< "$out"; then
+  notok "opening polled for feedback: the URL cannot reach a reviewer if the command never returns"
+else
+  ok "opening returns without polling"
+fi
+assert_contains "tells you what to run next" "--wait" "$out"
+
+urlfile="$(ls "$WORK"/.lavish/*.url 2>/dev/null | head -1)"
+[ -n "$urlfile" ] && ok "saves the URL beside the artifact" || notok "no .url file written"
+assert_contains "the saved URL is the review URL" "$LAVISH_AXI_HOST:4387" "$(cat "$urlfile" 2>/dev/null)"
+
+# --wait is the blocking half, and it returns what the reviewer sent.
+wout="$("$REN" --wait "$WORK/spec.md" 2>&1)"; wrc=$?
+assert_eq "--wait exits 0" "0" "$wrc"
+assert_contains "--wait returns the human's feedback" "put the toggle in settings" "$wout"
+
+# --wait must not rebuild the page under a reviewer who is reading it.
+before="$(cat "$html")"
+"$REN" --wait "$WORK/spec.md" >/dev/null 2>&1
+assert_eq "--wait leaves the artifact alone" "$before" "$(cat "$html")"
+
+# --wait before anything was rendered is a usage error, not a silent hang.
+rm -rf "$WORK/.lavish"
+"$REN" --wait "$WORK/spec.md" >/dev/null 2>&1
+assert_eq "--wait with no artifact exits 2" "2" "$?"
 
 exit "$TESTS_FAILED"

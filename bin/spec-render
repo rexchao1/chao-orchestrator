@@ -26,9 +26,23 @@
 #   back to loopback and says so, because a review URL nobody else can open is
 #   a thing you want to be told about, not to discover from a phone.
 #
-# The poll is FOREGROUND on purpose. Lavish forbids nohup, &, and disown, and
-# holding the conversation while a spec is under review is the accepted cost.
-# One spec at a time.
+# Opening and waiting are two commands, deliberately. They used to be one, and
+# that one printed the review URL and then blocked on the poll. Run through an
+# agent's shell tool, stdout stays buffered until the command exits, so the URL
+# could not reach the reviewer until the review it was for was already over.
+# Measured on this host: a reviewer sat in front of a four minute "thinking"
+# spinner with no link, and reasonably concluded it had hung.
+#
+# So: `spec-render <spec.md>` builds, opens, prints the URL and EXITS. The agent
+# can then say the URL out loud. `spec-render --wait <spec.md>` is the blocking
+# half, run second, once the reviewer has somewhere to go.
+#
+# The URL is also written next to the artifact as <slug>.url, because a link
+# that exists only in a terminal that has scrolled is a link you have lost.
+#
+# The poll is still FOREGROUND. Lavish forbids nohup, &, and disown, and holding
+# the conversation while a spec is under review is the accepted cost. One spec
+# at a time.
 set -uo pipefail
 
 BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,7 +58,21 @@ if [ -z "${LAVISH_AXI_HOST:-}" ]; then
 fi
 export LAVISH_AXI_HOST
 
-[ "$#" -eq 1 ] || { echo "usage: spec-render <spec.md>" >&2; exit 2; }
+usage() {
+  echo "usage: spec-render <spec.md>          build, open, print the review URL, exit" >&2
+  echo "       spec-render --wait <spec.md>   block until feedback is sent or the session ends" >&2
+  echo "       spec-render --end <spec.md>    end the review session" >&2
+  exit 2
+}
+
+mode=open
+case "${1:-}" in
+  --wait) mode=wait; shift ;;
+  --end)  mode=end;  shift ;;
+  -*)     usage ;;
+esac
+
+[ "$#" -eq 1 ] || usage
 spec="$1"
 [ -f "$spec" ] || { echo "error: no such file: $spec" >&2; exit 2; }
 
@@ -53,6 +81,24 @@ slug="$(basename "$spec" .md | tr -c 'a-zA-Z0-9-' '-' | sed 's/-\{2,\}/-/g; s/^-
 outdir="$ORCH_HOME/.lavish"
 mkdir -p "$outdir"
 html="$outdir/$slug.html"
+urlfile="$outdir/$slug.url"
+
+# --wait and --end act on an artifact that already exists. Rebuilding it here
+# would regenerate the page under a reviewer who is reading it, so they do not.
+if [ "$mode" = "wait" ]; then
+  [ -f "$html" ] || { echo "error: no artifact at $html. Run spec-render $spec first." >&2; exit 2; }
+  [ -f "$urlfile" ] && echo "still open at $(cat "$urlfile")"
+  echo "waiting for feedback, this holds the conversation until they send or end"
+  # Foreground by design. Never background this.
+  $LAVISH poll "$html"
+  exit $?
+fi
+
+if [ "$mode" = "end" ]; then
+  [ -f "$html" ] || { echo "error: no artifact at $html" >&2; exit 2; }
+  $LAVISH end "$html"
+  exit $?
+fi
 
 # Minimal, dependency-free markdown to HTML. The spec shape is fixed and small:
 # one "## " title, several "### " headings, "- " bullets, fenced code, and
@@ -147,9 +193,8 @@ open_out="$($LAVISH "$html" --no-open 2>&1)" || {
   exit 1
 }
 
-url="$(printf '%s' "$open_out" | grep -o 'http://[^"[:space:]]*' | head -1)"
+url="$(grep -o 'http://[^"[:space:]]*' <<< "$open_out" | head -1)"
+printf '%s\n' "$url" > "$urlfile"
 echo "review at $url"
-echo "waiting for your feedback, this holds the conversation until you send or end"
-
-# Foreground by design. Never background this.
-$LAVISH poll "$html"
+echo "url also saved at $urlfile"
+echo "give that link to the reviewer, THEN run: spec-render --wait $spec"
