@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# orch-clone <project> | --all
+#
+# Creates and refreshes the orchestrator's own read-only clones under clones/.
+# These exist so a spec can be grounded in real code. They are a reading cache
+# and never a working copy.
+#
+# INV-2 says the orchestrator never writes to a repository outside its own
+# directory. These clones ARE inside its directory, so writing here is allowed,
+# but a clone that can push is one accident away from a violation somewhere
+# else, so the push URL is disabled outright.
+#
+# The worker keeps its own caches at ~/.factory/workers/worker/. Never read from
+# or write to those: they are a different component's private state and they
+# share this machine.
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+PROJECTS="$ORCH_HOME/config/projects.tsv"
+CLONES="$ORCH_HOME/clones"
+
+usage() { echo "usage: orch-clone <project> | --all" >&2; exit 2; }
+[ "$#" -eq 1 ] || usage
+
+[ -f "$PROJECTS" ] || { echo "error: no project map at $PROJECTS" >&2; exit 2; }
+
+refresh_one() {
+  local name="$1" repo="$2" dest="$CLONES/$1" url
+
+  case "$repo" in
+    github.com/*) url="https://$repo.git" ;;
+    *)            url="$repo" ;;   # a local path, used by the tests
+  esac
+
+  if [ -d "$dest/.git" ]; then
+    git -C "$dest" fetch --quiet --prune origin || return 1
+    # Detached, so there is no local branch anyone could commit onto.
+    git -C "$dest" checkout --quiet --detach origin/HEAD 2>/dev/null \
+      || git -C "$dest" checkout --quiet --detach FETCH_HEAD || return 1
+  else
+    mkdir -p "$CLONES"
+    git clone --quiet "$url" "$dest" || return 1
+    git -C "$dest" checkout --quiet --detach HEAD || return 1
+  fi
+
+  # Make a push structurally impossible rather than merely unlikely.
+  git -C "$dest" remote set-url --push origin DISABLED-read-only-clone || return 1
+
+  echo "$dest"
+}
+
+if [ "$1" = "--all" ]; then
+  rc=0
+  while IFS=$'\t' read -r name repo _rest; do
+    case "$name" in ''|\#*) continue ;; esac
+    refresh_one "$name" "$repo" || { echo "error: failed to refresh $name" >&2; rc=1; }
+  done < "$PROJECTS"
+  exit "$rc"
+fi
+
+repo="$(awk -F'\t' -v p="$1" '$1 == p { print $2; exit }' "$PROJECTS")"
+if [ -z "$repo" ]; then
+  echo "error: project '$1' is not in $PROJECTS" >&2
+  exit 2
+fi
+refresh_one "$1" "$repo" || { echo "error: git failed for $1" >&2; exit 1; }
