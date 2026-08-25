@@ -1,0 +1,11 @@
+# Read-only clones of your projects. Never committed: this repo is public.
+clones/
+
+# Local pointers to submitted work. Identifiers only, still not public.
+state/
+
+# lavish-axi artifacts and its session data.
+.lavish/
+
+# The real project list. config/projects.tsv.example is the committed template.
+config/projects.tsv
