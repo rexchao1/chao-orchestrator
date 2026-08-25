@@ -32,7 +32,7 @@ fake_api_stop
 assert_eq "success exits 0" "0" "$rc"
 assert_contains "posts to the answer route" "/api/v1/work/b22e40aa-b348-4738-a7a1-051d1c046f72/answer" "$sent"
 assert_contains "sends the message" "throw a TypeError" "$sent"
-if printf '%s' "$sent" | grep -qE '"request_id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"'; then
+if grep -qE '"request_id":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"' <<< "$sent"; then
   ok "generates a lowercase hex request_id"
 else
   notok "request_id must be a lowercase UUID: validUUID rejects uppercase"
@@ -50,12 +50,12 @@ assert_eq "--list exits 0" "0" "$rcl"
 assert_contains "--list prints the work id" "b22e40aa" "$lst"
 assert_contains "--list prints the question" "empty name throw" "$lst"
 assert_contains "--list names the task from the run" "Add input validation to greet" "$lst"
-if printf '%s' "$lst" | grep -q '(deadbeef)'; then
+if grep -q '(deadbeef)' <<< "$lst"; then
   notok "--list printed tasks.name with its request-key suffix"
 else
   ok "--list does not print the request-key suffix"
 fi
-if printf '%s' "$lst" | grep -q '(untitled)'; then
+if grep -q '(untitled)' <<< "$lst"; then
   notok "--list read a session field that does not exist"
 else
   ok "--list found a real task name"

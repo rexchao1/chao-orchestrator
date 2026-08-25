@@ -16,6 +16,10 @@
 #     "state" and no "healthy" field on a worker.
 #   - tasks.name carries a " (xxxxxxxx)" request-key suffix for deduplication.
 #     tasks.submitted_name is the title a human wrote. Always show the latter.
+#   - Run ids are printed in full, never truncated. The detail view takes a run
+#     id, the API rejects a prefix with not_found, and a tool that prints an
+#     identifier you cannot hand back to it is worse than one that prints none.
+#     Found by the orchestrator itself, which hit exactly that wall.
 #   - A refused automatic merge is readable: recordMergeRefusal appends the
 #     reason to sessions.terminal_message. A SUCCESSFUL automatic merge is not:
 #     it writes only a work_updates row, and no route exposes work_updates.
@@ -72,7 +76,7 @@ printf '%s' "$runs" | jq -r '
     "no runs"
   else
     (.runs[] |
-      (.id[0:8]) + "  " +
+      .id + "  " +
       (((.state // "?") + "          ")[0:10]) + "  " +
       (.source // "?") + "  " +
       (.task.submitted_name // .task.name // "(unnamed)") +

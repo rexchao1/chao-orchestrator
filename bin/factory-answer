@@ -46,7 +46,7 @@ fi
 
 work_id="$1"; message="$2"
 
-if ! printf '%s' "$work_id" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+if ! grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' <<< "$work_id"; then
   echo "error: work id must be a lowercase UUID" >&2
   echo "hint: validUUID accepts lowercase hex only; an uppercase id is a 400" >&2
   exit 2

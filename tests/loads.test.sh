@@ -19,7 +19,7 @@ out="$(claude -p 'Answer in exactly two lines. Line 1: "SENTINEL:" followed by t
 
 printf '%s\n' "$out"
 
-if printf '%s' "$out" | grep -q 'ORCHESTRATOR-LOADED'; then
+if grep -q 'ORCHESTRATOR-LOADED' <<< "$out"; then
   ok "AGENTS.md is loaded through the CLAUDE.md import"
 else
   notok "AGENTS.md was NOT loaded. Check that CLAUDE.md contains @AGENTS.md"
@@ -37,7 +37,7 @@ fi
 # that would catch the symlink being lost in a checkout.
 missing=""
 for skill in triage spec submit status; do
-  printf '%s' "$out" | grep -qi "$skill" || missing="$missing $skill"
+  grep -qi "$skill" <<< "$out" || missing="$missing $skill"
 done
 if [ -z "$missing" ]; then
   ok "all four skills are discovered through the symlink"

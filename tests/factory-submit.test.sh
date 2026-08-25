@@ -42,12 +42,12 @@ assert_contains "prints the state" "queued" "$out"
 assert_contains "sends runtime claude-code, never the codex default" '"runtime":"claude-code"' "$sent"
 assert_contains "sends source orchestrator" '"source":"orchestrator"' "$sent"
 assert_contains "defaults to pre_approved true" '"pre_approved":true' "$sent"
-if printf '%s' "$sent" | grep -q '"concurrency_limit"\|"execution_profile_id"'; then
+if grep -q '"concurrency_limit"\|"execution_profile_id"' <<< "$sent"; then
   notok "sent a field AdmitWorkRequest does not have: DisallowUnknownFields makes it a 400"
 else
   ok "sends no unknown fields"
 fi
-if printf '%s' "$sent" | grep -q '"delivery"'; then
+if grep -q '"delivery"' <<< "$sent"; then
   notok "sent delivery: the project's server side default_delivery must decide, not a prompt"
 else
   ok "sends no delivery, so the project's own setting decides"
@@ -86,7 +86,7 @@ sent4="$(cat "$FAKE_LOG")"
 fake_api_stop
 assert_eq "unknown pipeline exits 2" "2" "$rc4"
 assert_contains "unknown pipeline lists the real ones" "Implement, review, deliver" "$out4"
-if printf '%s' "$sent4" | grep -q 'POST'; then
+if grep -q 'POST' <<< "$sent4"; then
   notok "submitted anyway after failing to resolve the pipeline"
 else
   ok "never submits when the pipeline cannot be resolved"

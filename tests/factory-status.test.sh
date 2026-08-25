@@ -13,13 +13,16 @@ fake_api_stop
 
 assert_eq "exits 0 on success" "0" "$rc"
 assert_contains "prints the submitted name, not the dedup artifact" "Orchestrator runs without a gate" "$out"
-if printf '%s' "$out" | grep -q '(3459c2c3)'; then
+if grep -q '(3459c2c3)' <<< "$out"; then
   notok "must print submitted_name, not tasks.name with its request-key suffix"
 else
   ok "does not print the request-key suffix"
 fi
 assert_contains "prints the state" "failed" "$out"
 assert_contains "prints the run id" "5edf217d" "$out"
+# In full, not truncated: the detail view takes a run id and the API rejects a
+# prefix with not_found, so a truncated id is one you cannot hand back.
+assert_contains "prints the run id in full" "5edf217d-53dc-4099-ad56-55e1f27bdd68" "$out"
 
 # 2. An API error must not be reported as an empty factory.
 fake_api_start 18084 "503" '{"error":{"code":"storage_unavailable","message":"database is unavailable"}}'
@@ -47,7 +50,7 @@ assert_contains "run detail reads the publish branch from session.target" "facto
 assert_contains "run detail prints the pull request url" "pull/4" "$det"
 assert_contains "run detail prints the delivery mode" "pr+automerge" "$det"
 assert_contains "run detail lists every stage" "Deliver" "$det"
-if printf '%s' "$det" | grep -q 'null'; then
+if grep -q 'null' <<< "$det"; then
   notok "printed a null: a field was read from the wrong level of the payload"
 else
   ok "prints no nulls"

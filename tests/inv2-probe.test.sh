@@ -68,11 +68,27 @@ out="$("$PROBE" check 2>&1)"; rc=$?
 assert_eq "a path already moving at baseline is not a violation" "0" "$rc"
 assert_contains "reports how many it ignored" "ignored 1 change" "$out"
 
-# Calibration must not blind the probe to everything else in the same repo.
-printf 'oops\n' > "$WORK/victim/still-a-violation.txt"
+# Calibration must not blind the probe: an unrelated write in a live repository
+# is still SEEN and still NAMED. It is reported as unattributable rather than as
+# a violation, because another process was writing that repository too, and
+# blaming it on the orchestrator would be a guess. Exit 2, never 0.
+printf 'oops\n' > "$WORK/victim/still-reported.txt"
 out="$("$PROBE" check 2>&1)"; rc=$?
-assert_eq "an unrelated write in a noisy repo still FAILs" "1" "$rc"
-assert_contains "names the real violation" "still-a-violation.txt" "$out"
+assert_eq "an unrelated write in a live repo is not silently passed" "2" "$rc"
+assert_contains "still names the path" "still-reported.txt" "$out"
+rm -f "$WORK/victim/still-reported.txt"
+# A repository with a live writer cannot be spoken for at all, not even for
+# paths that happened to be still during the settle window. That is
+# INDETERMINATE, exit 2, and it must never be reported as a pass.
+out="$("$PROBE" check 2>&1)"   # victim is live from the calibration above
+printf 'later\n' > "$WORK/victim/appeared-after-baseline.txt"
+out="$("$PROBE" check 2>&1)"; rc=$?
+assert_eq "a live repository yields INDETERMINATE, not PASS" "2" "$rc"
+assert_contains "says attribution was not possible" "INDETERMINATE" "$out"
+assert_contains "names the path it cannot speak for" "appeared-after-baseline.txt" "$out"
+assert_contains "says not to record it as a pass" "not record this as a pass" "$out"
+rm -f "$WORK/victim/appeared-after-baseline.txt" "$WORK/victim/still-a-violation.txt"
+
 export INV2_SETTLE_SECONDS=0
 
 exit "$TESTS_FAILED"

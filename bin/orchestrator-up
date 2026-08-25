@@ -51,7 +51,7 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
 fi
 
 gui_env="$(tmux showenv -g 2>/dev/null || true)"
-if ! printf '%s' "$gui_env" | grep -qE 'TERM_PROGRAM=Apple_Terminal|__CFBundleIdentifier=com\.apple\.Terminal'; then
+if ! grep -qE 'TERM_PROGRAM=Apple_Terminal|__CFBundleIdentifier=com\.apple\.Terminal' <<< "$gui_env"; then
   echo "error: the running tmux server was not started from Terminal.app." >&2
   echo "       Claude Code could not read the macOS Keychain inside it, and would" >&2
   echo "       come up logged out without saying so." >&2

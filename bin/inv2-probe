@@ -123,14 +123,43 @@ active_attempts() {
 # recorded as noisy and excluded from attribution later. This is the same
 # reasoning the worker zone already rests on, applied to every other writer on
 # the machine: name what cannot be attributed rather than blame it on us.
+# Sampling is not enough on its own. A settle window only sees a writer that
+# happens to write during it: measured on this host, two consecutive five second
+# windows saw five moving paths and then zero, while the same three watcher
+# processes ran throughout. So ask the process table directly. A repository
+# named in a running process's command line has a live writer in it, whether or
+# not it wrote in the last five seconds.
+live_repos_from_processes() {
+  local procs
+  procs="$(ps -Ao command= 2>/dev/null || ps -eo command= 2>/dev/null)"
+  [ -n "$procs" ] || return 0
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    case "$repo/" in "$ORCH_HOME"/*) continue ;; esac
+    if LC_ALL=C grep -qF -- "$repo" <<< "$procs"; then
+      echo "$repo"
+    fi
+  done < <(quiet_roots)
+}
+
 calibrate_noise() {
   diff "$STATE_DIR/settle-a.txt" "$STATE_DIR/baseline.txt" 2>/dev/null \
     | grep -E '^[<>] ' | cut -c3- \
     | awk -F'\t' 'BEGIN{OFS="\t"} $1=="Q" { print $1, $2, $3; next } { print }' \
     | LC_ALL=C sort -u > "$STATE_DIR/noisy.txt"
+  # A repository that moved at all during the settle window has a live writer
+  # in it, and nothing under it can be attributed to the orchestrator after the
+  # fact. Recording the exact paths is not enough: measured on this host,
+  # firstmate wrote nine different files in ten minutes on no fixed cadence, so
+  # a settle window of any length catches some of them and misses the rest.
+  # The repository, not the path, is the unit of attribution.
+  { cut -f2 "$STATE_DIR/noisy.txt" 2>/dev/null
+    cat "$STATE_DIR/live-by-process.txt" 2>/dev/null
+  } | LC_ALL=C sort -u > "$STATE_DIR/live-repos.txt"
 }
 
 if [ "$mode" = "baseline" ]; then
+  live_repos_from_processes > "$STATE_DIR/live-by-process.txt"
   snapshot "$STATE_DIR/settle-a.txt"
   [ "$SETTLE" -gt 0 ] && sleep "$SETTLE"
   snapshot "$STATE_DIR/baseline.txt"
@@ -141,6 +170,13 @@ if [ "$mode" = "baseline" ]; then
   echo "orchestrator home excluded: $ORCH_HOME"
   echo "repositories covered: $(grep -c '^### ' "$STATE_DIR/baseline.txt")"
   echo "settled for ${SETTLE}s; $(wc -l < "$STATE_DIR/noisy.txt" | tr -d ' ') path(s) were already moving and will be ignored"
+  if [ -s "$STATE_DIR/live-repos.txt" ]; then
+    echo "repositories with a live writer, unattributable from here:"
+    sed 's/^/  /' "$STATE_DIR/live-repos.txt"
+    echo "attributable repositories: $(( $(grep -c '^### ' "$STATE_DIR/baseline.txt") - $(wc -l < "$STATE_DIR/live-repos.txt" | tr -d ' ') ))"
+  else
+    echo "every repository is quiet; this probe can speak for all of them"
+  fi
   echo "the ignored list is at $STATE_DIR/noisy.txt"
   exit 0
 fi
@@ -156,6 +192,7 @@ active_attempts > "$STATE_DIR/attempts-after.txt"
 violations=0
 indeterminate=0
 ignored=0
+unattributed=0
 
 if ! diff -q "$STATE_DIR/baseline.txt" "$STATE_DIR/check.txt" >/dev/null 2>&1; then
   while IFS= read -r line; do
@@ -182,6 +219,12 @@ if ! diff -q "$STATE_DIR/baseline.txt" "$STATE_DIR/check.txt" >/dev/null 2>&1; t
     fi
     if [ -s "$STATE_DIR/noisy.txt" ] && LC_ALL=C grep -qFx -- "$key" "$STATE_DIR/noisy.txt"; then
       ignored=$((ignored + 1))
+      continue
+    fi
+    if [ -s "$STATE_DIR/live-repos.txt" ] && LC_ALL=C grep -qFx -- "$repo" "$STATE_DIR/live-repos.txt"; then
+      echo "INDETERMINATE  another process was already writing $repo at baseline, so this cannot be attributed: $path"
+      indeterminate=1
+      unattributed=$((unattributed + 1))
       continue
     fi
     if [ "$zone" = "W" ]; then
@@ -216,7 +259,10 @@ if [ "$violations" -gt 0 ]; then
   exit 1
 fi
 if [ "$indeterminate" -gt 0 ]; then
-  echo "RESULT: INDETERMINATE. No violation found, but attribution was not possible."
+  echo "RESULT: INDETERMINATE. No violation found in any repository this probe can"
+  echo "        speak for, but $unattributed change(s) sat in repositories another"
+  echo "        process was already writing. Stop those writers and run again for a"
+  echo "        clean answer. Do not record this as a pass."
   exit 2
 fi
 echo "RESULT: PASS. No write outside $ORCH_HOME."

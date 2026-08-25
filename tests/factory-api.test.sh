@@ -20,12 +20,12 @@ assert_eq "2xx returns the body" '{"runs":[]}' "$body"
 #    Content-Type either, and must not: the factory parses one only where it
 #    decodes a body, so sending it on a bodyless GET would be noise.
 sent="$(cat "$FAKE_LOG")"
-if printf '%s' "$sent" | grep -qi '^Origin:'; then
+if grep -qi '^Origin:' <<< "$sent"; then
   notok "must not send an Origin header: validateMutationOrigin rejects a foreign one"
 else
   ok "sends no Origin header on a GET"
 fi
-if printf '%s' "$sent" | grep -qi '^Content-Type:'; then
+if grep -qi '^Content-Type:' <<< "$sent"; then
   notok "sent Content-Type on a bodyless GET"
 else
   ok "sends no Content-Type on a bodyless GET"
@@ -43,7 +43,7 @@ assert_contains "4xx surfaces the error code" "invalid_source" "$err"
 assert_contains "4xx surfaces the message" "source must be orchestrator" "$err"
 posted="$(cat "$FAKE_LOG")"
 assert_contains "a request with a body declares Content-Type: application/json" "Content-Type: application/json" "$posted"
-if printf '%s' "$posted" | grep -qi '^Origin:'; then
+if grep -qi '^Origin:' <<< "$posted"; then
   notok "must not send an Origin header on a mutation either"
 else
   ok "sends no Origin header on a POST"

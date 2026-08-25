@@ -62,7 +62,7 @@ assert_contains "pins the fixed session id" "$FIXED_UUID" "$created"
 # "No conversation found" on an id it has never seen, so a plain --resume here
 # would produce a tmux session whose command dies immediately.
 assert_contains "first launch creates with --session-id" "--session-id" "$created"
-if printf '%s' "$created" | grep -q -- '--resume'; then
+if grep -q -- '--resume' <<< "$created"; then
   notok "used --resume on a conversation that does not exist yet"
 else
   ok "does not resume a conversation that does not exist"
@@ -75,12 +75,12 @@ mkdir -p "$WORK/projects/-some-slug"
 "$UP" >/dev/null 2>&1
 created2="$(cat "$WORK/created.log" 2>/dev/null)"
 assert_contains "a later launch resumes" "--resume" "$created2"
-if printf '%s' "$created2" | grep -q -- '--session-id'; then
+if grep -q -- '--session-id' <<< "$created2"; then
   notok "tried to create a conversation that already exists"
 else
   ok "does not re-create an existing conversation"
 fi
-if printf '%s' "$created" | grep -q -- '--bare'; then
+if grep -q -- '--bare' <<< "$created"; then
   notok "must never use --bare: it never reads the keychain"
 else
   ok "does not use --bare"
