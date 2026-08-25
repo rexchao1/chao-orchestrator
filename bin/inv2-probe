@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+#
+# inv2-probe baseline | check
+#
+# Proves AC-8 and INV-2: "the orchestrator never writes to any path inside a
+# repository outside its own directory."
+#
+# Why this is not the assertion design.md first specified. That one asserted
+# `git status --porcelain` is empty in the worker's caches. It cannot pass. The
+# worker clones --no-checkout, so the cache's work tree holds only .git while
+# its index is populated, and every tracked file reads as a staged deletion:
+# 24 lines on this host, today, with no orchestrator in existence. And
+# --porcelain cannot see writes to gitignored paths, which INV-2 forbids just
+# as much. Both documents were corrected on 2026-08-24.
+#
+# Two zones, because attribution differs:
+#
+#   QUIET ZONE  Repositories no other process writes. Whole-tree fingerprint,
+#               so a gitignored write and a .git write are both caught.
+#   WORKER ZONE ~/.factory/workers. The worker legitimately writes here during
+#               a run. Compared against the recorded baseline STRING, limited
+#               to the facts a fetch provably does not perturb, and skipped
+#               per attempt when that attempt ran inside the probe window.
+#
+# The honest limitation: a worktree being actively written by a running attempt
+# cannot be attributed after the fact, because the design puts the orchestrator
+# and the worker on one machine as one Unix user. That is exit 2,
+# INDETERMINATE, which names the gap rather than passing over it.
+set -uo pipefail
+
+ORCH_HOME="${INV2_ORCH_HOME:-}"
+STATE_DIR="${INV2_STATE_DIR:-/tmp/inv2-probe}"
+FACTORY_HOME="${INV2_FACTORY_HOME:-$HOME/.factory}"
+DB="${INV2_DB:-$FACTORY_HOME/server/factory.sqlite3}"
+SKIP_WORKER="${INV2_SKIP_WORKER_ZONE:-0}"
+SETTLE="${INV2_SETTLE_SECONDS:-5}"
+
+mode="${1:-}"
+case "$mode" in
+  baseline|check) ;;
+  *) echo "usage: inv2-probe baseline | check" >&2; exit 3 ;;
+esac
+
+if [ -z "$ORCH_HOME" ]; then
+  echo "error: INV2_ORCH_HOME must name the orchestrator's own directory" >&2
+  echo "hint: every repository at or under it is excluded, because INV-2 permits it" >&2
+  exit 3
+fi
+ORCH_HOME="$(cd "$ORCH_HOME" 2>/dev/null && pwd)" || { echo "error: INV2_ORCH_HOME does not exist" >&2; exit 3; }
+
+mkdir -p "$STATE_DIR"
+
+quiet_roots() {
+  if [ -n "${INV2_QUIET_ROOTS:-}" ]; then
+    printf '%s' "$INV2_QUIET_ROOTS" | tr ':\n' '\n\n'
+  else
+    find "$HOME/Projects" -maxdepth 2 -name .git -type d 2>/dev/null | sed 's|/\.git$||'
+  fi
+}
+
+# A fingerprint of every path in the tree, with size and mtime. Catches what
+# git cannot see: gitignored files, in place rewrites, and .git internals.
+#
+# Every line carries its own zone and repository. That is not decoration: diff
+# emits changed lines with no surrounding context, so a "### REPO" header never
+# appears in its output and a parser cannot recover which repository a changed
+# line came from by tracking the last header it saw. Each line has to say.
+#
+#   Q<TAB>repo<TAB>relative-path<TAB>size:mtime
+#   W<TAB>cache<TAB>status|entry<TAB>text
+#
+# stat is called in batches through xargs, not once per file. The per-file form
+# forks once per path: measured at 2m43s over 80,680 files on this host, where
+# the batched form takes under a second. A probe nobody will wait for is a
+# probe nobody runs.
+fingerprint_tree() {
+  local root="$1"
+  find "$root" \( -type f -o -type l \) -print0 2>/dev/null \
+    | LC_ALL=C sort -z \
+    | xargs -0 -n 200 stat -f '%N	%z:%m' 2>/dev/null \
+    | awk -v root="$root" -v rl=$(( ${#root} + 2 )) 'BEGIN{OFS="\t"}
+        { i = index($0, "\t")
+          print "Q", root, substr(substr($0, 1, i-1), rl), substr($0, i+1) }'
+}
+
+snapshot() {
+  local out="$1"
+  : > "$out"
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    [ -d "$repo" ] || continue
+    case "$repo/" in "$ORCH_HOME"/*) continue ;; esac   # INV-2 permits our own
+    echo "### REPO $repo" >> "$out"
+    fingerprint_tree "$repo" >> "$out"
+  done < <(quiet_roots)
+
+  if [ "$SKIP_WORKER" != "1" ] && [ -d "$FACTORY_HOME/workers" ]; then
+    for cache in "$FACTORY_HOME"/workers/*/repositories/*; do
+      [ -d "$cache/.git" ] || [ -d "$cache" ] || continue
+      echo "### CACHE $cache" >> "$out"
+      # A fetch writes objects and remote refs. It does NOT write the index or
+      # the work tree, so these two facts are stable under a running worker.
+      ( cd "$cache" 2>/dev/null && git status --porcelain 2>/dev/null | LC_ALL=C sort ) \
+        | while IFS= read -r l; do printf 'W\t%s\tstatus\t%s\n' "$cache" "$l"; done >> "$out"
+      ( ls -A "$cache" 2>/dev/null | LC_ALL=C sort ) \
+        | while IFS= read -r l; do printf 'W\t%s\tentry\t%s\n' "$cache" "$l"; done >> "$out"
+    done
+  fi
+}
+
+active_attempts() {
+  [ "$SKIP_WORKER" = "1" ] && return 0
+  [ -f "$DB" ] || return 0
+  sqlite3 "file:$DB?mode=ro" \
+    "SELECT id FROM attempts WHERE state IN ('running','preparing');" 2>/dev/null
+}
+
+# A path is only evidence if it was still when we started watching. The host
+# runs other things: measured, ~/Projects/firstmate has three live bash
+# processes rewriting its state/ directory, and every one of those writes would
+# otherwise be reported as an orchestrator violation. So the baseline is taken
+# twice, SETTLE seconds apart, and anything that moved on its own in between is
+# recorded as noisy and excluded from attribution later. This is the same
+# reasoning the worker zone already rests on, applied to every other writer on
+# the machine: name what cannot be attributed rather than blame it on us.
+calibrate_noise() {
+  diff "$STATE_DIR/settle-a.txt" "$STATE_DIR/baseline.txt" 2>/dev/null \
+    | grep -E '^[<>] ' | cut -c3- \
+    | awk -F'\t' 'BEGIN{OFS="\t"} $1=="Q" { print $1, $2, $3; next } { print }' \
+    | LC_ALL=C sort -u > "$STATE_DIR/noisy.txt"
+}
+
+if [ "$mode" = "baseline" ]; then
+  snapshot "$STATE_DIR/settle-a.txt"
+  [ "$SETTLE" -gt 0 ] && sleep "$SETTLE"
+  snapshot "$STATE_DIR/baseline.txt"
+  calibrate_noise
+  active_attempts > "$STATE_DIR/attempts-before.txt"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE_DIR/baseline-at.txt"
+  echo "baseline recorded at $(cat "$STATE_DIR/baseline-at.txt")"
+  echo "orchestrator home excluded: $ORCH_HOME"
+  echo "repositories covered: $(grep -c '^### ' "$STATE_DIR/baseline.txt")"
+  echo "settled for ${SETTLE}s; $(wc -l < "$STATE_DIR/noisy.txt" | tr -d ' ') path(s) were already moving and will be ignored"
+  echo "the ignored list is at $STATE_DIR/noisy.txt"
+  exit 0
+fi
+
+if [ ! -f "$STATE_DIR/baseline.txt" ]; then
+  echo "error: no baseline at $STATE_DIR/baseline.txt. Run 'inv2-probe baseline' first." >&2
+  exit 3
+fi
+
+snapshot "$STATE_DIR/check.txt"
+active_attempts > "$STATE_DIR/attempts-after.txt"
+
+violations=0
+indeterminate=0
+ignored=0
+
+if ! diff -q "$STATE_DIR/baseline.txt" "$STATE_DIR/check.txt" >/dev/null 2>&1; then
+  while IFS= read -r line; do
+    entry="${line:2}"
+    case "$entry" in
+      '### '*)
+        echo "VIOLATION  a repository appeared or vanished under a watched root: ${entry#\#\#\# }"
+        violations=$((violations + 1))
+        continue ;;
+    esac
+    zone="$(printf '%s' "$entry" | cut -f1)"
+    repo="$(printf '%s' "$entry" | cut -f2)"
+    path="$(printf '%s' "$entry" | cut -f3)"
+    detail="$(printf '%s' "$entry" | cut -f4)"
+    # A bare .git/index mtime bump is what reading does: git status itself
+    # rewrites the stat cache. Reading is permitted.
+    if [ "$zone" = "Q" ] && [ "$path" = ".git/index" ]; then
+      continue
+    fi
+    if [ "$zone" = "Q" ]; then
+      key="$(printf 'Q\t%s\t%s' "$repo" "$path")"
+    else
+      key="$entry"
+    fi
+    if [ -s "$STATE_DIR/noisy.txt" ] && LC_ALL=C grep -qFx -- "$key" "$STATE_DIR/noisy.txt"; then
+      ignored=$((ignored + 1))
+      continue
+    fi
+    if [ "$zone" = "W" ]; then
+      echo "VIOLATION  the worker zone changed: $repo -> $path $detail"
+    else
+      echo "VIOLATION  wrote inside a repository outside the orchestrator: $repo -> $path"
+    fi
+    violations=$((violations + 1))
+  # diff emits a "<" and a ">" line for one modified path, so every in-place
+  # rewrite would otherwise be counted, and reported, twice. Collapse to one
+  # record per key first, keeping the first occurrence so order is stable.
+  done < <(diff "$STATE_DIR/baseline.txt" "$STATE_DIR/check.txt" \
+    | grep -E '^[<>] ' | cut -c3- \
+    | awk -F'\t' '{ k = ($1 == "Q") ? ($1 FS $2 FS $3) : $0
+                     if (!(k in seen)) { seen[k] = 1; print "> " $0 } }')
+fi
+
+if [ "$SKIP_WORKER" != "1" ]; then
+  before="$(wc -l < "$STATE_DIR/attempts-before.txt" | tr -d ' ')"
+  after="$(wc -l < "$STATE_DIR/attempts-after.txt" | tr -d ' ')"
+  if [ "$before" != "0" ] || [ "$after" != "0" ]; then
+    echo "INDETERMINATE  the worker held an active attempt at a probe boundary."
+    echo "               Changes under the worker zone cannot be attributed to"
+    echo "               the orchestrator rather than to the worker."
+    indeterminate=1
+  fi
+fi
+
+if [ "$violations" -gt 0 ]; then
+  echo "RESULT: FAIL. $violations write(s) outside $ORCH_HOME. INV-2 violated."
+  [ "$ignored" -gt 0 ] && echo "         ignored $ignored change(s) on paths that were already moving at baseline."
+  exit 1
+fi
+if [ "$indeterminate" -gt 0 ]; then
+  echo "RESULT: INDETERMINATE. No violation found, but attribution was not possible."
+  exit 2
+fi
+echo "RESULT: PASS. No write outside $ORCH_HOME."
+[ "$ignored" -gt 0 ] && echo "         ignored $ignored change(s) on paths that were already moving at baseline."
+exit 0
