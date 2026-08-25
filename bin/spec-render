@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+#
+# spec-render <spec.md>
+#
+# Renders a blueprint-shape markdown spec as an HTML artifact and opens it in
+# Lavish Editor for annotation, then blocks until the human sends feedback.
+#
+# Why the conversion lives here:
+#   - lavish-axi accepts HTML only. A .md argument is rejected with
+#     "Lavish Editor expects an HTML file", code VALIDATION_ERROR, exit 2.
+#   - pandoc is not installed on the host, so there is no external converter.
+#   - The markdown spec stays the contract. This HTML is a view of it and is
+#     never what gets submitted.
+#
+# Why LAVISH_AXI_HOST is set:
+#   Lavish is documented to bind the Tailscale address automatically. Measured
+#   on this host, it does not: a plain invocation prints 127.0.0.1 and no
+#   warning even with Tailscale healthy. Setting LAVISH_AXI_HOST to the tailnet
+#   address makes the session URL answer over the tailnet, which is what makes
+#   review possible from a laptop or phone. Note the bind is exclusive: with it
+#   set, 127.0.0.1:4387 refuses connections. See fork-notes.md Gap 8.
+#
+#   The address is READ FROM tailscale at run time, never written down. This
+#   repository is public, and a tailnet address is exactly the kind of thing
+#   this repository's own rules say never to commit. With no tailnet it falls
+#   back to loopback and says so, because a review URL nobody else can open is
+#   a thing you want to be told about, not to discover from a phone.
+#
+# The poll is FOREGROUND on purpose. Lavish forbids nohup, &, and disown, and
+# holding the conversation while a spec is under review is the accepted cost.
+# One spec at a time.
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+LAVISH="${SPEC_RENDER_LAVISH:-npx -y lavish-axi}"
+if [ -z "${LAVISH_AXI_HOST:-}" ]; then
+  LAVISH_AXI_HOST="$(command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -1)"
+fi
+if [ -z "${LAVISH_AXI_HOST:-}" ]; then
+  LAVISH_AXI_HOST=127.0.0.1
+  echo "note: no tailnet address available, binding loopback." >&2
+  echo "      the review URL will only open on this machine." >&2
+fi
+export LAVISH_AXI_HOST
+
+[ "$#" -eq 1 ] || { echo "usage: spec-render <spec.md>" >&2; exit 2; }
+spec="$1"
+[ -f "$spec" ] || { echo "error: no such file: $spec" >&2; exit 2; }
+
+slug="$(basename "$spec" .md | tr -c 'a-zA-Z0-9-' '-' | sed 's/-\{2,\}/-/g; s/^-//; s/-$//')"
+[ -n "$slug" ] || slug="spec"
+outdir="$ORCH_HOME/.lavish"
+mkdir -p "$outdir"
+html="$outdir/$slug.html"
+
+# Minimal, dependency-free markdown to HTML. The spec shape is fixed and small:
+# one "## " title, several "### " headings, "- " bullets, fenced code, and
+# `inline code`. Anything outside that shape is emitted as a paragraph, so an
+# unexpected line is still visible rather than silently dropped.
+title="$(grep -m1 '^## ' "$spec" | sed 's/^## //')"
+[ -n "$title" ] || title="Spec"
+
+{
+cat <<HEAD
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$title</title>
+<style>
+  :root { --bg:#fbfbfa; --fg:#1a1a18; --mut:#6b6b66; --line:#e3e3df; --code:#f2f2ef; --accent:#7a5cff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16161a; --fg:#eceaf0; --mut:#a09eaa; --line:#2c2c34; --code:#22222a; --accent:#a894ff; }
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); margin: 0;
+         font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 .4rem; letter-spacing: -.02em; }
+  .kicker { color: var(--mut); font-size: .78rem; text-transform: uppercase;
+            letter-spacing: .1em; margin-bottom: .75rem; }
+  h2 { font-size: 1.05rem; margin: 2.2rem 0 .6rem; padding-top: 1.2rem;
+       border-top: 1px solid var(--line); }
+  ul { padding-left: 1.15rem; margin: .5rem 0; }
+  li { margin: .3rem 0; }
+  p { margin: .6rem 0; }
+  code { background: var(--code); padding: .12em .38em; border-radius: 4px;
+         font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { background: var(--code); padding: .9rem 1rem; border-radius: 8px;
+        overflow-x: auto; border: 1px solid var(--line); }
+  pre code { background: none; padding: 0; }
+  .scope { border-left: 3px solid var(--accent); padding-left: .9rem; }
+</style>
+</head>
+<body>
+<main>
+<div class="kicker">Spec for review</div>
+<h1>$title</h1>
+HEAD
+
+in_list=0; in_pre=0
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    '```'*)
+      if [ "$in_pre" -eq 1 ]; then echo '</code></pre>'; in_pre=0
+      else [ "$in_list" -eq 1 ] && { echo '</ul>'; in_list=0; }; echo '<pre><code>'; in_pre=1; fi
+      continue ;;
+  esac
+  if [ "$in_pre" -eq 1 ]; then
+    printf '%s\n' "$line" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+    continue
+  fi
+
+  esc="$(printf '%s' "$line" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+  esc="$(printf '%s' "$esc" | sed 's/`\([^`]*\)`/<code>\1<\/code>/g')"
+
+  case "$line" in
+    '## '*) : ;;                       # the title, already emitted as h1
+    '### '*)
+      [ "$in_list" -eq 1 ] && { echo '</ul>'; in_list=0; }
+      h="${esc#\#\#\# }"
+      case "$h" in
+        'Out of scope'*) printf '<h2 class="scope">%s</h2>\n' "$h" ;;
+        *)               printf '<h2>%s</h2>\n' "$h" ;;
+      esac ;;
+    '- '*)
+      [ "$in_list" -eq 0 ] && { echo '<ul>'; in_list=1; }
+      printf '<li>%s</li>\n' "${esc#- }" ;;
+    '')
+      [ "$in_list" -eq 1 ] && { echo '</ul>'; in_list=0; } ;;
+    *)
+      [ "$in_list" -eq 1 ] && { echo '</ul>'; in_list=0; }
+      printf '<p>%s</p>\n' "$esc" ;;
+  esac
+done < "$spec"
+[ "$in_list" -eq 1 ] && echo '</ul>'
+[ "$in_pre" -eq 1 ] && echo '</code></pre>'
+
+echo '</main></body></html>'
+} > "$html"
+
+open_out="$($LAVISH "$html" --no-open 2>&1)" || {
+  echo "error: lavish-axi could not open the artifact" >&2
+  printf '%s\n' "$open_out" >&2
+  exit 1
+}
+
+url="$(printf '%s' "$open_out" | grep -o 'http://[^"[:space:]]*' | head -1)"
+echo "review at $url"
+echo "waiting for your feedback, this holds the conversation until you send or end"
+
+# Foreground by design. Never background this.
+$LAVISH poll "$html"
