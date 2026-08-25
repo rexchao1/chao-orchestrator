@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#
+# factory-api <METHOD> <PATH> [JSON_BODY]
+#
+# The only place in this repository that makes an HTTP request to the factory.
+# Every rule the control plane's middleware enforces is encoded here once, so
+# no skill and no other script can get a payload wrong:
+#
+#   - Host must be loopback. validateRequestHost (controlplane/http.go:796-814)
+#     accepts only loopback IPs and "localhost" and guards the whole operator
+#     mux, including /healthz. The orchestrator runs on the host, so this is
+#     satisfied by construction. Never point FACTORY_BASE at a tailnet name.
+#   - Content-Type must parse to exactly application/json, else 415.
+#   - No Origin header. validateMutationOrigin (http.go:785-794) rejects any
+#     Origin whose authority differs from Host, and curl has no reason to send
+#     one. We make that explicit rather than incidental.
+#   - There is no authentication on this API. Do not add a token.
+#
+# Exit codes:
+#   0  2xx
+#   1  4xx or 5xx, with "error: <code>: <message>" on stderr
+#   2  usage error
+#   3  the server could not be reached
+set -uo pipefail
+
+FACTORY_BASE="${FACTORY_BASE:-http://127.0.0.1:7337}"
+
+if [ "$#" -lt 2 ]; then
+  echo "usage: factory-api <METHOD> <PATH> [JSON_BODY]" >&2
+  exit 2
+fi
+
+method="$1"; path="$2"; body="${3:-}"
+
+tmp_body="$(mktemp)"
+trap 'rm -f "$tmp_body"' EXIT
+
+set -- -sS -X "$method" "$FACTORY_BASE$path" -o "$tmp_body" -w '%{http_code}'
+if [ -n "$body" ]; then
+  set -- "$@" -H 'Content-Type: application/json' --data-binary "$body"
+fi
+
+# Deliberately not --fail: it suppresses the response body, and the body is the
+# only place the factory's error code string appears.
+code="$(curl "$@" 2>/dev/null)"
+curl_rc=$?
+
+if [ "$curl_rc" -ne 0 ] || [ -z "$code" ]; then
+  echo "error: could not reach the factory at $FACTORY_BASE (curl rc=$curl_rc)" >&2
+  echo "hint: is factory-server running? ssh factorymac 'zsh -lc \"tmux ls\"'" >&2
+  exit 3
+fi
+
+case "$code" in
+  2*)
+    cat "$tmp_body"
+    exit 0
+    ;;
+  *)
+    err_code="$(jq -r '.error.code // "unknown"' < "$tmp_body" 2>/dev/null)"
+    err_msg="$(jq -r '.error.message // "no message"' < "$tmp_body" 2>/dev/null)"
+    if [ -z "$err_code" ] || [ "$err_code" = "null" ]; then
+      err_code="http_$code"
+      err_msg="$(cat "$tmp_body")"
+    fi
+    echo "error: $err_code: $err_msg" >&2
+    exit 1
+    ;;
+esac
