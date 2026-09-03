@@ -331,8 +331,14 @@ The existing immutable profile gains `sandbox`:
 
 ```
 backend = "persistent-auto" | "docker"
-sandbox = { image, network = "none" | "allowlist" | "open", cpu, memory }
+sandbox = { image, network = "none" | "allowlist" | "open" | "broker", cpu, memory }
 ```
+
+`broker` was added by Phase 7 and is a change to this section, recorded here
+rather than left only in the phase document.
+It is bridge networking plus a route to the credential broker on the worker's host, so an agent reaches third party APIs without holding their keys.
+It is not the `allowlist` posture: egress is still unrestricted, which is why it is a fourth name rather than an implementation of the third.
+`allowlist` remains unimplemented and is still rejected at profile validation.
 
 ### Naming and identity
 
@@ -375,6 +381,11 @@ The coding agent is the untrusted party inside this system. It runs in a Docker
 sandbox with an explicit network posture and receives no operator credential.
 Git push credentials are held by the worker, not passed into the agent
 environment.
+
+Under the `broker` posture the agent holds no third party API key either.
+It is given a proxy URL and a trusted root, and the broker on the host injects the `Authorization` header for hosts it has a rule for.
+The proxy URL contains the worker's own broker token, so that credential is visible in the container and in `docker inspect`.
+That is the trade the posture makes: one scoped, revocable token in the container in exchange for every upstream key staying on the host.
 
 Repository code is the second untrusted input. Until the Docker backend lands,
 agent runs remain limited to repositories you trust. That limit is the current
