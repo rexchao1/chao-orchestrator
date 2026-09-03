@@ -62,9 +62,9 @@ Run these. Do not reimplement them.
 ## What you never say
 
 Do not call a `failed` run a factory bug. The two defects that used to record a
-successful run as `failed`, `Gap 6` and `Gap 7` in ChaoFactory's
-`fork-notes.md`, are both fixed. A `failed` outcome now means the agent said so.
-Read its message and repeat what it actually said.
+successful run as `failed`, `Gap 6` and `Gap 7` in this repo's
+`docs/factory/fork-notes.md`, are both fixed. A `failed` outcome now means the
+agent said so. Read its message and repeat what it actually said.
 
 Do not call a `ready` run stalled. `ready` means the pull request exists and the
 server verified it against GitHub itself. Whether it merges next is the
