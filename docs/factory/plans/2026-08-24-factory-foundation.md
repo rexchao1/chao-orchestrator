@@ -1,5 +1,7 @@
 # Factory Foundation Implementation Plan
 
+**Status: done. Findings and deviations are in [fork-notes.md](../fork-notes.md). Reconciled 2026-09-03.**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stand up a forked `owainlewis/factory` entirely on the Mac mini, reachable from any device with an SSH terminal and a browser, and take one real vertical sliver to a reviewed pull request using entirely stock software.

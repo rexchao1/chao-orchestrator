@@ -1,5 +1,7 @@
 # Phase 2: Admission and approval
 
+**Status: done. Landed in the fork through commits `729f6bd` to `e60a9b1` (draft state, admission API, approve control). Reconciled 2026-09-03.**
+
 **Goal:** work submitted without a human present waits as a draft until approved,
 and work submitted by the orchestrator runs immediately because a human was
 already in the loop.

@@ -1,5 +1,7 @@
 # Phase 5: Auto-merge
 
+**Status: done. Landed in the fork in commit `ceac419`, off by default per project. Reconciled 2026-09-03.**
+
 **Goal:** a project can opt in to having its pull requests merged automatically
 once the gates pass.
 

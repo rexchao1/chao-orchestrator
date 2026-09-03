@@ -3,9 +3,13 @@
 Source design: [design.md](design.md). Per-phase scopes: [phases/](phases/README.md).
 
 The design covers three independent subsystems in two languages, so it is built
-as six plans rather than one. Each plan produces a working, testable result on
+as seven plans rather than one. Each plan produces a working, testable result on
 its own, and each is written only when its predecessor has made its details
 knowable.
+
+**Where it stands, 2026-09-03:** Plans 1 through 5 are done. Plan 6 is
+deferred. Plan 7 is scoped and not started. The per-phase table in
+[phases/README.md](phases/README.md) names the commits.
 
 ## Why not one plan
 
@@ -22,7 +26,12 @@ One host. Every other device is a thin client.
 | Role | Machine | Holds |
 |---|---|---|
 | Host | Mac mini, Apple silicon | Everything: `factory-server`, `factory-worker`, the Go toolchain, the fork clone, the orchestrator session, SQLite state, Docker, repository caches, worktrees, `gh` and Claude Code authentication, tailscale. |
-| Client | WSL box, laptop, phone | An SSH terminal and a browser. Nothing installed. |
+| Client | Windows desktop and laptop, phone | An SSH terminal, a browser, and for a device that runs agents locally: a clone of `infra` with `vault-run` and a tunnel to the credential broker. See `infra/docs/devices.md`. |
+
+Secrets, the credential broker (agent-vault on the host, loopback only), and
+per-device bootstrap scripts live in the private `infra` repository. Shared
+agent skills live in `agent-skills`. Both are separate from this repository so
+the factory docs stay about the factory.
 
 Nothing irreplaceable lives on a client. Source is a git clone, tooling is
 reinstallable, and all state is on the host. This is deliberate: you should be
@@ -36,13 +45,16 @@ against the host's single clone, so there is no push-and-pull round trip while
 iterating.
 
 Workers poll outbound to the server. The operator API binds loopback and is
-reached through `tailscale serve` or an SSH tunnel.
+reached through `tailscale serve` (working since fork commit `590487f`) or an
+SSH tunnel. The credential broker is SSH tunnel only, because the tailnet is
+shared and has no ACLs; `infra/docs/tailscale.md` has the reasoning and the
+upgrade path.
 
 ## The plans
 
 ### Plan 1: Factory foundation
 
-**Status:** written, [plans/2026-08-24-factory-foundation.md](plans/2026-08-24-factory-foundation.md)
+**Status:** done. Plan at [plans/2026-08-24-factory-foundation.md](plans/2026-08-24-factory-foundation.md), findings in [fork-notes.md](fork-notes.md).
 
 Prepare the Mac mini, fork and build `owainlewis/factory` on it, install
 blueprint skills into a scratch repository, and drive one real sliver to a pull
@@ -58,6 +70,7 @@ improvements to a working system rather than prerequisites for an unproven one.
 
 ### Plan 2: Admission and approval
 
+**Status:** done, fork commits `729f6bd` to `e60a9b1`.
 **Depends on:** Plan 1.
 
 Add the `draft` Work state ahead of `queued`, a `POST /api/work/{id}/approve`
@@ -72,6 +85,7 @@ against until the admission contract exists.
 
 ### Plan 3: Orchestrator distro
 
+**Status:** done, this repository.
 **Depends on:** Plan 2.
 
 A new repository, cloned on the host, containing `AGENTS.md`, a triage skill, a
@@ -87,6 +101,7 @@ spec reaches the factory queue; `AC-8` and `AC-10` pass.
 
 ### Plan 4: Sandbox and mechanical gates
 
+**Status:** done, fork commit `ceac419`.
 **Depends on:** Plan 1. Independent of Plans 2 and 3.
 
 A `docker` execution-profile backend, and `kind: code` pipeline stages that run
@@ -102,6 +117,7 @@ the Mac before this plan starts.
 
 ### Plan 5: Auto-merge
 
+**Status:** done, fork commit `ceac419`. Off by default per project.
 **Depends on:** Plan 4.
 
 Per-project auto-merge, off by default, gated on passing checks and an Approve
@@ -115,6 +131,7 @@ earned trust.
 
 ### Plan 6: Second worker
 
+**Status:** deferred.
 **Depends on:** Plan 1. Not scheduled.
 
 Enroll the WSL box as a second worker so runs can execute on either machine.
@@ -126,11 +143,28 @@ operator-managed TLS certificates and enrollment. That cost buys nothing until
 one worker is actually saturated. Written when the Mac mini becomes a
 bottleneck, not before.
 
+### Plan 7: Broker route for sandboxed runs
+
+**Status:** scoped 2026-09-03, [phases/phase-7-broker-route.md](phases/phase-7-broker-route.md).
+**Depends on:** Plan 4.
+
+Let a sandboxed run reach third party APIs through the agent-vault broker on
+the host, so the container holds a proxy URL and a CA instead of raw API keys.
+A `broker` network posture, a CA mount, and a handful of proxy variables on the
+sandbox allowlist.
+
+**Deliverable:** a run with no `GITHUB_TOKEN` in its environment completes a
+GitHub API call through the proxy, and revoking its agent makes that fail.
+
+**Why now:** the broker exists and works for interactive sessions on every
+device. This is the last hop that keeps keys out of the factory's containers.
+
 ## Dependency order
 
 ```text
 Plan 1 ──┬── Plan 2 ── Plan 3
-         ├── Plan 4 ── Plan 5
+         ├── Plan 4 ──┬── Plan 5
+         │            └── Plan 7
          └── Plan 6 (deferred)
 ```
 

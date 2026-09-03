@@ -1,5 +1,7 @@
 # Phase 4: Sandbox and mechanical gates
 
+**Status: done. Landed in the fork in commit `ceac419` (docker sandbox, code stages). Phase 7 builds on it. Reconciled 2026-09-03.**
+
 **Goal:** agent runs execute inside a container with an explicit network posture,
 and pipelines can run deterministic commands that consume no tokens.
 

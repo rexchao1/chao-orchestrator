@@ -1,5 +1,7 @@
 # Phase 3: Orchestrator
 
+**Status: done. This repository is the deliverable. Reconciled 2026-09-03.**
+
 **Goal:** you talk to one agent session, describe work in plain language, and a
 spec reaches the factory queue. It triages small work past the spec step
 entirely.

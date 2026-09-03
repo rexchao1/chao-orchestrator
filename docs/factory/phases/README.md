@@ -6,12 +6,20 @@ unknown, and what "done" means.
 
 | Phase | Status | Blocked by | Language |
 |---|---|---|---|
-| [1. Factory foundation](../plans/2026-08-24-factory-foundation.md) | Plan written, not started | nothing | none, setup only |
-| [2. Admission and approval](phase-2-admission-and-approval.md) | Scoped | Phase 1 | Go, TypeScript |
-| [3. Orchestrator](phase-3-orchestrator.md) | Scoped | Phase 2 | Markdown, bash |
-| [4. Sandbox and gates](phase-4-sandbox-and-gates.md) | Scoped | Phase 1 | Go |
-| [5. Auto-merge](phase-5-auto-merge.md) | Scoped | Phase 4 | Go |
+| [1. Factory foundation](../plans/2026-08-24-factory-foundation.md) | Done, see [fork-notes.md](../fork-notes.md) | nothing | none, setup only |
+| [2. Admission and approval](phase-2-admission-and-approval.md) | Done, fork commits `729f6bd` to `e60a9b1` | Phase 1 | Go, TypeScript |
+| [3. Orchestrator](phase-3-orchestrator.md) | Done, this repository | Phase 2 | Markdown, bash |
+| [4. Sandbox and gates](phase-4-sandbox-and-gates.md) | Done, fork commit `ceac419` | Phase 1 | Go |
+| [5. Auto-merge](phase-5-auto-merge.md) | Done, fork commit `ceac419` | Phase 4 | Go |
 | [6. Second worker](phase-6-second-worker.md) | Deferred | Phase 1 | Go, ops |
+| [7. Broker route](phase-7-broker-route.md) | Scoped 2026-09-03 | Phase 4 | Go |
+
+Statuses were reconciled on 2026-09-03 from the fork's history.
+Each phase document carries the same status on its first lines.
+
+The machines, secrets, and credential broker that the factory runs on are in
+the private `infra` repository, and shared agent skills are in
+`agent-skills`. Both are under `~/Projects` on the host.
 
 ## Reading order for any session
 
