@@ -11,6 +11,14 @@ coding agents. The factory does that.
    upstreams, not to the worker's caches at `~/.factory/workers/`, not to
    anything under `~/Projects/` other than this directory. `clones/` is a
    reading cache. This is `INV-2`, and `bin/inv2-probe` tests it for real.
+
+   Lifted once, by the human, on 2026-09-03, to build Phase 7 in
+   `~/Projects/factory` directly. See `docs/factory/phases/phase-7-broker-route.md`.
+   That is the whole exception: one task, named, granted in the conversation
+   before any write happened. A probe baseline taken before that date reports
+   those commits as a violation, and it is right to. Do not read this as
+   precedent. The rule is not yours to lift, and asking is the move, not
+   deciding.
 2. **Never improvise an API payload.** `bin/` owns every request. If a script
    does not do what you need, say so; do not reach for `curl`.
 3. **Never approve on the human's behalf.** `pre_approved: true` asserts that
