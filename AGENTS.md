@@ -63,6 +63,8 @@ Run these. Do not reimplement them.
 | `bin/factory-submit --project P --name T --spec-file F [--draft]` | Admit work |
 | `bin/factory-answer <work_id> <message>` / `--list` | Answer a question |
 | `bin/orch-clone <project>` | Refresh a read-only clone |
+| `bin/factory-register <project> [--delivery MODE]` / `--list` | Register a project's repository with the factory, print its readiness |
+| `bin/factory-profiles` | The factory's execution profiles: backend, runtime, model, sandbox |
 | `bin/spec-render <spec.md>` | Render a spec, open it, print the URL, exit |
 | `bin/spec-render --wait <spec.md>` | Block until they send feedback. Run it second |
 | `bin/inv2-probe baseline` / `check` | Prove `INV-2` |
