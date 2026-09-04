@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Reconcile the reviewed Pipeline definitions in config/pipelines with Factory.
+set -euo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+API="$BIN/factory-api"
+DIRECTORY="$ORCH_HOME/config/pipelines"
+
+[ -d "$DIRECTORY" ] || { echo "error: no pipeline directory at $DIRECTORY" >&2; exit 2; }
+
+for file in "$DIRECTORY"/*.json; do
+  [ -e "$file" ] || continue
+  name="$(jq -er '.name' "$file")"
+  stages="$(jq -ec '.stages' "$file")"
+  page="$("$API" GET /api/v1/pipelines)"
+  existing="$(printf '%s' "$page" | jq -c --arg name "$name" '.pipelines[]? | select(.name == $name)' | head -n1)"
+  if [ -z "$existing" ]; then
+    payload="$(jq -nc --arg name "$name" --argjson stages "$stages" '{name:$name, stages:$stages}')"
+    "$API" POST /api/v1/pipelines "$payload" >/dev/null
+    echo "created $name"
+    continue
+  fi
+  id="$(printf '%s' "$existing" | jq -r '.id')"
+  detail="$("$API" GET "/api/v1/pipelines/$id")"
+  generation="$(printf '%s' "$detail" | jq -r '.generation')"
+  payload="$(jq -nc --arg name "$name" --argjson stages "$stages" --argjson generation "$generation" \
+    '{name:$name, stages:$stages, expected_generation:$generation}')"
+  "$API" PUT "/api/v1/pipelines/$id" "$payload" >/dev/null
+  echo "updated $name"
+done

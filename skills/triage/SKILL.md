@@ -54,8 +54,10 @@ undecided question.
 
 - **Isolated:** write the task in the same blueprint shape anyway, because the
   agent still needs it, but do not render it and do not ask for approval. Go
-  straight to `skills/submit`. The person already told you what they wanted;
-  that is the human in the loop.
+  straight to `skills/submit` and submit with `--assurance fast`. Fast work uses
+  one implementation agent and may auto-merge after Factory delivery and
+  repository checks. The person already told you what they wanted; that is the
+  human in the loop.
 - **Spec-worthy:** go to `skills/spec`.
 
 ## Record misclassifications

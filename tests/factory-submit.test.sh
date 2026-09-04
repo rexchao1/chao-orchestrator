@@ -42,6 +42,7 @@ assert_contains "prints the state" "queued" "$out"
 assert_contains "sends runtime claude-code, never the codex default" '"runtime":"claude-code"' "$sent"
 assert_contains "sends source orchestrator" '"source":"orchestrator"' "$sent"
 assert_contains "defaults to pre_approved true" '"pre_approved":true' "$sent"
+assert_contains "defaults to reviewed assurance" '"assurance":"reviewed"' "$sent"
 if grep -q '"concurrency_limit"\|"execution_profile_id"' <<< "$sent"; then
   notok "sent a field AdmitWorkRequest does not have: DisallowUnknownFields makes it a 400"
 else
@@ -53,9 +54,14 @@ else
   ok "sends no delivery, so the project's own setting decides"
 fi
 
-# 6. The spec reached the server intact, with the reporting contract appended.
+# 6. The spec reached the server intact without execution-policy text. Factory
+# supplies reporting only to the stage that owns the outcome.
 assert_contains "spec text survived JSON encoding" "Add a farewell function" "$sent"
-assert_contains "appends the reporting contract" 'Reporting, required' "$sent"
+if grep -q 'Reporting, required' <<< "$sent"; then
+  notok "submission duplicated the reporting contract into every stage"
+else
+  ok "does not duplicate reporting policy into task content"
+fi
 
 # 7. The pointer was recorded.
 assert_contains "records the run id locally" "5edf217d-53dc-4099-ad56-55e1f27bdd68" "$(cat "$WORK/state/submissions.tsv")"
@@ -69,13 +75,21 @@ assert_contains "--draft sends pre_approved false" '"pre_approved":false' "$sent
 
 # 9. A named pipeline is resolved to its id through the API, never guessed.
 # One canned body answers both requests, so it carries both shapes.
-BOTH='{"pipelines":[{"id":"7ad8c32a-1f0e-4b2a-9c31-2d5f4a6b8e10","name":"Implement, review, deliver"}],"run_id":"5edf217d-53dc-4099-ad56-55e1f27bdd68","task_id":"3bf8ba22-935d-4ef8-9445-9139c3413fc7","work_ids":["b22e40aa-b348-4738-a7a1-051d1c046f72"],"state":"queued","source":"orchestrator"}'
+BOTH='{"pipelines":[{"id":"7ad8c32a-1f0e-4b2a-9c31-2d5f4a6b8e10","name":"Implement, review, deliver"},{"id":"8bd9c43b-2f1e-4c3b-8d42-3e6f5b7c9f21","name":"Fast"}],"run_id":"5edf217d-53dc-4099-ad56-55e1f27bdd68","task_id":"3bf8ba22-935d-4ef8-9445-9139c3413fc7","work_ids":["b22e40aa-b348-4738-a7a1-051d1c046f72"],"state":"queued","source":"orchestrator"}'
 fake_api_start 18087 "200" "$BOTH"
 FACTORY_BASE=http://127.0.0.1:18087 "$SUB" --project scratch --name x --spec-file "$WORK/spec.md" \
   --pipeline 'Implement, review, deliver' >/dev/null 2>&1
 sent3="$(cat "$FAKE_LOG")"
 fake_api_stop
 assert_contains "resolves the pipeline name to an id" '"pipeline_id":"7ad8c32a-1f0e-4b2a-9c31-2d5f4a6b8e10"' "$sent3"
+
+fake_api_start 18089 "200" "$BOTH"
+FACTORY_BASE=http://127.0.0.1:18089 "$SUB" --project scratch --name x --spec-file "$WORK/spec.md" \
+  --assurance fast >/dev/null 2>&1
+fast_sent="$(cat "$FAKE_LOG")"
+fake_api_stop
+assert_contains "fast assurance is explicit" '"assurance":"fast"' "$fast_sent"
+assert_contains "fast assurance selects Fast pipeline" '"pipeline_id":"8bd9c43b-2f1e-4c3b-8d42-3e6f5b7c9f21"' "$fast_sent"
 
 # 10. An unknown pipeline name fails locally, and never submits.
 fake_api_start 18088 "200" "$BOTH"

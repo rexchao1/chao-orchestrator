@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # factory-submit --project NAME --name TITLE --spec-file PATH
-#                [--draft] [--pipeline NAME] [--request-key KEY]
+#                [--draft] [--assurance fast|reviewed] [--pipeline NAME] [--request-key KEY]
 #
 # Builds and sends protocol.AdmitWorkRequest (internal/protocol/tasks.go:255-266).
 # A model never writes this payload. Things that would silently go wrong if it did:
@@ -34,12 +34,12 @@ STATE="$ORCH_HOME/state/submissions.tsv"
 MAX_SPEC_BYTES=32768
 
 usage() {
-  echo "usage: factory-submit --project NAME --name TITLE --spec-file PATH [--draft] [--pipeline NAME] [--request-key KEY]" >&2
+  echo "usage: factory-submit --project NAME --name TITLE --spec-file PATH [--draft] [--assurance fast|reviewed] [--pipeline NAME] [--request-key KEY]" >&2
   exit 2
 }
 
 project=""; title=""; spec_file=""; pipeline_name=""; request_key=""
-pre_approved="true"
+pre_approved="true"; assurance="reviewed"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -47,6 +47,7 @@ while [ "$#" -gt 0 ]; do
     --name)        title="${2:-}"; shift 2 ;;
     --spec-file)   spec_file="${2:-}"; shift 2 ;;
     --pipeline)    pipeline_name="${2:-}"; shift 2 ;;
+    --assurance)   assurance="${2:-}"; shift 2 ;;
     --request-key) request_key="${2:-}"; shift 2 ;;
     --draft)       pre_approved="false"; shift ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
@@ -54,6 +55,10 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$project" ] && [ -n "$title" ] && [ -n "$spec_file" ] || usage
+case "$assurance" in
+  fast|reviewed) ;;
+  *) echo "error: assurance must be fast or reviewed" >&2; exit 2 ;;
+esac
 
 if [ ! -f "$spec_file" ]; then
   echo "error: no such spec file: $spec_file" >&2
@@ -75,7 +80,11 @@ if [ -z "$repository" ]; then
 fi
 
 if [ -z "$pipeline_name" ]; then
-  pipeline_name="$(awk -F'\t' -v p="$project" '$1 == p { print $3; exit }' "$PROJECTS")"
+  if [ "$assurance" = "fast" ]; then
+    pipeline_name="Fast"
+  else
+    pipeline_name="$(awk -F'\t' -v p="$project" '$1 == p { print $3; exit }' "$PROJECTS")"
+  fi
 fi
 
 # A pipeline is named here and numbered by the factory. Resolving it through
@@ -97,34 +106,11 @@ if [ -n "$pipeline_name" ]; then
   fi
 fi
 
-# AgentUpdatePromptContract (internal/protocol/prompt.go:15) already tells the
-# agent that it must report, and reaches it on every attempt. What it does not
-# spell out is the vocabulary, or that there is no per command help. Gap 6 is
-# closed, so `factory` now resolves on the agent's PATH and this block no
-# longer has to name an absolute path.
-read -r -d '' REPORTING_BLOCK <<'BLOCK'
-
-### Reporting, required
-
-    factory update --status STATUS --message "..."
-
-Before you exit, report exactly one outcome. There is no per command help, so
-do not run `factory update --help`; it exits 2 without printing flags.
-
-- `--status ready` when the work is done. Requires `--pr` with the pull request
-  URL. Commit and push first.
-- `--status needs-input` when the spec does not contain a decision you need.
-  Commit and push everything to the Factory publish branch first, leave the
-  worktree clean, and put the question itself in `--message`.
-- `--status no-change` when the correct result is an empty diff.
-- `--status failed` when you cannot proceed.
-
-`--status running` is optional progress and does not end the attempt.
-`--message` is always required and must be non-empty.
-BLOCK
-
-spec_body="$(cat "$spec_file")"
-spec_full="$spec_body$REPORTING_BLOCK"
+# Reporting is execution policy, not task content. Factory appends its trusted
+# update contract only to a final agent stage, while a delivery stage reports
+# mechanically. Putting the contract in the spec would repeat it into every
+# stage and could make an implementer terminate the Work before review.
+spec_full="$(cat "$spec_file")"
 
 spec_bytes="$(printf '%s' "$spec_full" | wc -c | tr -d ' ')"
 if [ "$spec_bytes" -gt "$MAX_SPEC_BYTES" ]; then
@@ -157,6 +143,7 @@ payload="$(jq -nc \
   --arg  name "$title" \
   --arg  spec "$spec_full" \
   --arg  pipeline "$pipeline_id" \
+  --arg  assurance "$assurance" \
   --argjson pre "$pre_approved" \
   '{
      request_key: $rk,
@@ -165,7 +152,8 @@ payload="$(jq -nc \
      spec:        $spec,
      runtime:     "claude-code",
      source:      "orchestrator",
-     pre_approved: $pre
+     pre_approved: $pre,
+     assurance:   $assurance
    }
    + (if $pipeline == "" then {} else {pipeline_id: $pipeline} end)')"
 
