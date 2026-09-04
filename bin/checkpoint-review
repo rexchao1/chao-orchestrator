@@ -257,13 +257,16 @@ page = f'''<!doctype html>
 </head>
 <body>
 <main>
-<div class="nolavish" id="nolavish">Opened without Lavish. Answers stay on this page.</div>
+<div class="nolavish" id="nolavish">Lavish is not attached to this page, so that answer was not queued. Open the Lavish link and answer again.</div>
 {"".join(parts)}
 </main>
 <script>
 (function () {{
-  var has = typeof window.lavish !== "undefined" && window.lavish && typeof window.lavish.queuePrompt === "function";
-  if (!has) document.getElementById("nolavish").classList.add("on");
+  // Lavish attaches window.lavish after this page's own scripts run, so look
+  // for it when the human submits, never at load. A page that checked at load
+  // dropped every answer and only the typed message arrived.
+  function lavish() {{ return (window.lavish && typeof window.lavish.queuePrompt === "function") ? window.lavish : null; }}
+  var banner = document.getElementById("nolavish");
   Array.prototype.forEach.call(document.querySelectorAll("form[data-lavish-question]"), function (form) {{
     var key = form.getAttribute("data-lavish-question"), title = form.getAttribute("data-title") || key;
     var queued = form.querySelector("[data-queued]");
@@ -272,8 +275,11 @@ page = f'''<!doctype html>
       event.preventDefault();
       var data = new FormData(form), answer = data.get("answer") || "", note = (data.get("note") || "").toString().trim();
       if (!answer && !note) return;
+      var l = lavish();
+      if (!l) {{ if (banner) banner.classList.add("on"); return; }}
+      if (banner) banner.classList.remove("on");
       var text = "Answer " + title + ": " + answer + (note ? " Note: " + note : "");
-      if (has) window.lavish.queuePrompt(text, {{ tag: "answer", text: title + ": " + (note || answer), element: form, queueKey: key, data: {{ question: key, answer: answer, note: note }} }});
+      l.queuePrompt(text, {{ tag: "answer", text: title + ": " + (note || answer), element: form, queueKey: key, data: {{ question: key, answer: answer, note: note }} }});
       if (queued) queued.classList.add("on");
     }});
   }});
