@@ -70,6 +70,8 @@ Run these. Do not reimplement them.
 | `bin/checkpoint-review <project> <n>` / `--wait` | Render the PRD for review, then block for answers |
 | `bin/checkpoint-pass freeze\|pebble <project> <n> ...` | One read-only pass; freeze after answers, pebble after frozen |
 | `bin/checkpoint-cost [project] [n]` | What planning cost, what the build will roughly cost |
+| `bin/checkpoint-preflight <project> <n>` | Every host pebble named has a vault rule, or it fails |
+| `bin/checkpoint-close <project> <n>` | Record a merged closure: PRD and route line go to built |
 
 `bin/factory-api` is called by the others. You do not call it directly.
 

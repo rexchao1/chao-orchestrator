@@ -200,7 +200,7 @@ for name in order:
             ], "Optional note", "Queue decision"))
         parts.append("</section>")
     elif name == "Credentials":
-        link = f' <a href="{esc(vault_url)}">Add them in the vault</a>.' if vault_url else ""
+        link = f' <a href="{esc(vault_url)}">Add them in the vault</a>.' if vault_url else " No vault URL is configured; put one in config/vault.url to get a link here."
         parts.append(f'<section><h2>Credentials</h2>{block(lines)}<p class="fine">Host and purpose only. No value ever passes through an agent.{link}</p></section>')
     elif name == "Critique log":
         parts.append(f'<details><summary>Critique log</summary>{block(lines)}</details>')

@@ -301,5 +301,8 @@ case "$mode" in
       status="$(sed -n 's/^Status:[[:space:]]*//p' "$out" | head -n1)"
       [ -n "$status" ] || echo "note: the PRD has no Status: line" >&2
     fi
+    if [ "$mode" = "freeze" ] && [ "$status" = "frozen" ] && [ -f "$route_file" ]; then
+      "$BIN/checkpoint-route-status" "$project" "$n" frozen || echo "note: the route line for checkpoint $n was not updated" >&2
+    fi
     echo "pass $mode $project $n round $round: $model $effort, \$$cost, ${in_tok}+${cr_tok} in, ${out_tok} out, wrote $out" ;;
 esac

@@ -77,10 +77,16 @@ bin/checkpoint-pass pebble <project> <n> --no-open-tickets
 It writes numbered task files in blueprint's shape under `state/checkpoints/<project>/<n>/tasks/` and a credentials line.
 More than five tasks fails as oversized: the checkpoint splits, it does not get bigger tasks.
 
-Then the credentials.
-Read the hosts to the human and ask whether each one has a rule in the vault.
-A missing rule stops here.
-Nothing about a credential's value ever passes through you.
+Then the credentials:
+
+```bash
+bin/checkpoint-preflight <project> <n>
+```
+
+It checks every host pebble named against the vault's service rules and prints one line per host.
+Say the lines.
+A MISSING host stops here: the human adds the rule in the vault, you run it again, and nothing is submitted until it passes.
+Nothing about a credential's value ever passes through you; the check is by name.
 
 ## 5. Submit, through the existing gate
 
@@ -95,7 +101,15 @@ The batch presentation is where they approve the specs.
 ## 6. Closure, then the next checkpoint
 
 When the closure task's pull request merges, the checkpoint is built.
-Set its route line to built by running the next loop: `bin/checkpoint-loop <project> <n+1>` drafts the next PRD from the route and what closure recorded.
+Say so, then record it:
+
+```bash
+bin/checkpoint-close <project> <n>
+```
+
+That sets the PRD and its route line to built, and nothing else.
+The route line went to frozen at freeze time the same way, so the route always says where every checkpoint stands.
+Then `bin/checkpoint-loop <project> <n+1>` drafts the next PRD from the route and what closure recorded.
 
 ## Cost
 
