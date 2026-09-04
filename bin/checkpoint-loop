@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#
+# checkpoint-loop <project> <n> [--rounds R] [--idea FILE]
+#
+# Draft, critique, revise, critique, revise. Each step is one read-only pass
+# from bin/checkpoint-pass with fresh context, so the critic never sees the
+# drafter's reasoning, only the PRD. The loop ends with the PRD in status
+# review and tells you to render it with bin/checkpoint-review.
+#
+# What it decides on its own:
+#   - route missing: writes it from --idea, and refuses without one.
+#   - PRD missing: drafts it. PRD present in draft or review: keeps it and goes
+#     straight to critique, so a killed loop resumes instead of starting over.
+#   - a critique with verdict ready ends the loop early.
+#   - rounds default to 2. CHECKPOINT_ROUNDS or --rounds change it. Measure the
+#     second round's yield before deciding it is worth keeping.
+#
+# What it never does: freeze. Only the human's review answers freeze a PRD.
+#
+# The only edit this script makes to the PRD itself is the Status: line, set to
+# review when the loop ends, so bin/checkpoint-review and the freeze pass know
+# where the PRD is in its life.
+#
+# Exit: 0 PRD in review, 1 a pass failed, 2 usage.
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+PASS="$BIN/checkpoint-pass"
+COST="$BIN/checkpoint-cost"
+
+usage() {
+  echo "usage: checkpoint-loop <project> <n> [--rounds R] [--idea FILE]" >&2
+  exit 2
+}
+
+[ "$#" -ge 2 ] || usage
+project="$1"; n="$2"; shift 2
+rounds="${CHECKPOINT_ROUNDS:-2}"; idea=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --rounds) rounds="${2:-}"; shift 2 ;;
+    --idea)   idea="${2:-}"; shift 2 ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
+[[ "$n" =~ ^[0-9]+$ ]] || { echo "error: checkpoint number must be an integer" >&2; exit 2; }
+[[ "$rounds" =~ ^[0-9]+$ ]] && [ "$rounds" -ge 1 ] || { echo "error: --rounds must be a positive integer" >&2; exit 2; }
+
+dir="$ORCH_HOME/state/checkpoints/$project"
+route_file="$dir/route.md"
+prd="$dir/$n.md"
+
+if [ ! -f "$route_file" ]; then
+  [ -n "$idea" ] || { echo "error: no route at $route_file and no --idea FILE to write one from" >&2; exit 2; }
+  "$PASS" route "$project" - --idea "$idea" || exit 1
+fi
+
+if [ -f "$prd" ]; then
+  status="$(sed -n 's/^Status:[[:space:]]*//p' "$prd" | head -n1)"
+  case "$status" in
+    draft|review) echo "resuming: $prd exists with status $status, skipping the draft" ;;
+    *) echo "error: $prd has status '$status'. A frozen or built PRD does not loop again; a change is a new checkpoint" >&2; exit 2 ;;
+  esac
+else
+  "$PASS" draft "$project" "$n" || exit 1
+fi
+
+verdict="revise"; round=0
+while [ "$round" -lt "$rounds" ]; do
+  round=$((round + 1))
+  "$PASS" critique "$project" "$n" --round "$round" || exit 1
+  verdict="$(jq -r '.verdict' "$dir/$n.critique-$round.json")"
+  if [ "$verdict" = "ready" ]; then
+    echo "round $round: the critic found nothing blocking or major, stopping early"
+    break
+  fi
+  "$PASS" revise "$project" "$n" --round "$round" || exit 1
+done
+
+# The one edit the loop makes to the PRD: its status.
+if grep -q '^Status:' "$prd"; then
+  sed -i.bak 's/^Status:.*/Status: review/' "$prd" && rm -f "$prd.bak"
+else
+  echo "note: the PRD has no Status: line to set" >&2
+fi
+
+echo
+echo "checkpoint $n of $project is in review"
+for f in "$dir/$n".critique-*.json; do
+  [ -f "$f" ] || continue
+  r="$(basename "$f" | sed 's/.*critique-\([0-9]*\)\.json/\1/')"
+  jq -r --arg r "$r" '"  round \($r): verdict \(.verdict), \(.findings | length) finding(s), \([.findings[] | select(.severity == "blocking")] | length) blocking"' "$f"
+done
+questions="$(grep -c '^❓' "$prd" || true)"
+echo "  open questions in the PRD: $questions"
+creds="$(awk '/^## Credentials/ { f = 1; next } /^## / { f = 0 } f && NF' "$prd" | tr '\n' ';' | sed 's/;$//')"
+[ -n "$creds" ] && echo "  credentials: $creds"
+"$COST" "$project" "$n" 2>/dev/null | sed 's/^/  /'
+echo
+echo "next: bin/checkpoint-review $project $n    then say the URL out loud, then: bin/checkpoint-review --wait $project $n"

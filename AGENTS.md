@@ -50,6 +50,8 @@ Every incoming request goes through the same three questions.
 | A spec is ready, or triage said isolated | `skills/submit` |
 | "what is running", "did that finish", "what happened to X" | `skills/status` |
 | The factory is asking a question | `skills/status`, then `bin/factory-answer` |
+| A boulder: an idea bigger than one spec, or "boulder" said out loud | `skills/checkpoint` |
+| A checkpoint PRD is in review, fog, or frozen and needs its next step | `skills/checkpoint` |
 
 ## The toolbelt
 
@@ -64,6 +66,10 @@ Run these. Do not reimplement them.
 | `bin/spec-render <spec.md>` | Render a spec, open it, print the URL, exit |
 | `bin/spec-render --wait <spec.md>` | Block until they send feedback. Run it second |
 | `bin/inv2-probe baseline` / `check` | Prove `INV-2` |
+| `bin/checkpoint-loop <project> <n> [--idea F]` | Route, draft, critique, revise; ends in review |
+| `bin/checkpoint-review <project> <n>` / `--wait` | Render the PRD for review, then block for answers |
+| `bin/checkpoint-pass freeze\|pebble <project> <n> ...` | One read-only pass; freeze after answers, pebble after frozen |
+| `bin/checkpoint-cost [project] [n]` | What planning cost, what the build will roughly cost |
 
 `bin/factory-api` is called by the others. You do not call it directly.
 

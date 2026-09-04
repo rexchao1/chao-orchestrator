@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+#
+# checkpoint-cost [project] [n] [--json]
+#
+# What the checkpoint loop has spent and what the build will roughly cost.
+#
+#   no arguments      every project, one line per checkpoint, totals per project
+#   <project>         that project's checkpoints and its total
+#   <project> <n>     every pass of that checkpoint, its total, its estimate
+#
+# Measured numbers come from state/checkpoints/ledger.tsv, one row per pass,
+# written by bin/checkpoint-pass from the cost claude itself reports. That cost
+# is at list rates whether or not the run drew on a subscription, which is the
+# number you want when deciding if a loop is worth running.
+#
+# The factory does not report what a build attempt cost yet: the worker parses
+# claude's final result event and keeps only its text. Until the fork records
+# total_cost_usd per attempt, the build column is an ESTIMATE and says so:
+#
+#   tasks x stages x retry x per-run cost
+#   per-run cost = input x ((1 - cache) x price_in x 1.25 + cache x price_in x 0.1)
+#                  + output x price_out
+#
+# tasks is the count pebble produced, or 5 (the split rule's cap) before pebble
+# has run. Prices are the build row of config/models.tsv. The other factors are
+# environment variables with defaults from the assessment that sized this:
+#   CHECKPOINT_BUILD_IN_K=300  CHECKPOINT_BUILD_OUT_K=15  CHECKPOINT_BUILD_CACHE=0.8
+#   CHECKPOINT_BUILD_STAGES=3  CHECKPOINT_BUILD_RETRY=1.2
+#
+# Exit: 0, or 2 on usage. No ledger is not an error: it prints zeros.
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+MODELS="${CHECKPOINT_MODELS:-$ORCH_HOME/config/models.tsv}"
+LEDGER="$ORCH_HOME/state/checkpoints/ledger.tsv"
+STATE="$ORCH_HOME/state/checkpoints"
+
+json=0; project=""; n=""
+for a in "$@"; do
+  case "$a" in
+    --json) json=1 ;;
+    -*) echo "usage: checkpoint-cost [project] [n] [--json]" >&2; exit 2 ;;
+    *) if [ -z "$project" ]; then project="$a"; elif [ -z "$n" ]; then n="$a"; else echo "usage: checkpoint-cost [project] [n] [--json]" >&2; exit 2; fi ;;
+  esac
+done
+
+build_row="$(awk -F'\t' '!/^#/ && $1 == "build" { print $5 "\t" $6; exit }' "$MODELS" 2>/dev/null)"
+price_in="${build_row%%	*}"; price_out="${build_row##*	}"
+[ -n "$price_in" ] || { price_in=2; price_out=10; }
+
+LEDGER="$LEDGER" STATE="$STATE" PROJECT="$project" N="$n" JSON="$json" \
+PRICE_IN="$price_in" PRICE_OUT="$price_out" \
+IN_K="${CHECKPOINT_BUILD_IN_K:-300}" OUT_K="${CHECKPOINT_BUILD_OUT_K:-15}" \
+CACHE="${CHECKPOINT_BUILD_CACHE:-0.8}" STAGES="${CHECKPOINT_BUILD_STAGES:-3}" RETRY="${CHECKPOINT_BUILD_RETRY:-1.2}" \
+python3 - <<'PY'
+import csv, glob, json, os, sys
+from collections import OrderedDict
+
+ledger, state = os.environ["LEDGER"], os.environ["STATE"]
+project, n, as_json = os.environ["PROJECT"], os.environ["N"], os.environ["JSON"] == "1"
+pin, pout = float(os.environ["PRICE_IN"]), float(os.environ["PRICE_OUT"])
+in_k, out_k = float(os.environ["IN_K"]), float(os.environ["OUT_K"])
+cache, stages, retry = float(os.environ["CACHE"]), float(os.environ["STAGES"]), float(os.environ["RETRY"])
+
+rows = []
+if os.path.exists(ledger):
+    with open(ledger, newline="") as f:
+        for r in csv.DictReader(f, delimiter="\t"):
+            if project and r["project"] != project: continue
+            if n and r["checkpoint"] != n: continue
+            rows.append(r)
+
+def per_run():
+    i, o = in_k * 1000, out_k * 1000
+    return (i * (1 - cache) * pin * 1.25 + i * cache * pin * 0.1 + o * pout) / 1e6
+
+def estimate(proj, cp):
+    tasks = glob.glob(os.path.join(state, proj, cp, "tasks", "*.md"))
+    count, assumed = (len(tasks), False) if tasks else (5, True)
+    runs = count * stages * retry
+    return {"tasks": count, "assumed": assumed, "stage_runs": round(runs, 1), "cost_usd": round(runs * per_run(), 2)}
+
+# group measured rows by (project, checkpoint)
+groups = OrderedDict()
+for r in rows:
+    key = (r["project"], r["checkpoint"])
+    g = groups.setdefault(key, {"runs": 0, "cost_usd": 0.0, "denials": 0, "errors": 0, "passes": []})
+    g["runs"] += 1
+    g["cost_usd"] += float(r["cost_usd"] or 0)
+    g["denials"] += int(r["denials"] or 0)
+    g["errors"] += 0 if r["outcome"] == "ok" else 1
+    g["passes"].append(r)
+
+# checkpoints known from state even with no ledger rows yet (a route only, say)
+if project:
+    for p in sorted(glob.glob(os.path.join(state, project, "*.md"))):
+        cp = os.path.basename(p)[:-3]
+        if cp.isdigit() and (not n or cp == n):
+            groups.setdefault((project, cp), {"runs": 0, "cost_usd": 0.0, "denials": 0, "errors": 0, "passes": []})
+
+out = {"checkpoints": [], "projects": {}}
+for (proj, cp), g in groups.items():
+    est = estimate(proj, cp) if cp.isdigit() else {"tasks": 0, "assumed": False, "stage_runs": 0, "cost_usd": 0.0}
+    entry = {"project": proj, "checkpoint": cp, "measured": {"runs": g["runs"], "cost_usd": round(g["cost_usd"], 4), "denials": g["denials"], "errors": g["errors"]}, "estimate": est}
+    out["checkpoints"].append(entry)
+    pt = out["projects"].setdefault(proj, {"measured_usd": 0.0, "estimate_usd": 0.0, "runs": 0})
+    pt["measured_usd"] = round(pt["measured_usd"] + g["cost_usd"], 4)
+    pt["estimate_usd"] = round(pt["estimate_usd"] + est["cost_usd"], 2)
+    pt["runs"] += g["runs"]
+for pt in out["projects"].values():
+    pt["total_usd"] = round(pt["measured_usd"] + pt["estimate_usd"], 2)
+out["assumptions"] = {"price_in": pin, "price_out": pout, "build_in_k": in_k, "build_out_k": out_k, "cache": cache, "stages": stages, "retry": retry, "per_run_usd": round(per_run(), 4)}
+
+if as_json:
+    print(json.dumps(out, indent=2)); sys.exit(0)
+
+def money(x): return f"${x:,.2f}"
+if project and n:
+    for r in rows:
+        print(f"{r['ts']}  {r['mode']:<9} r{r['round']}  {r['model']:<20} {r['effort']:<6} {money(float(r['cost_usd'] or 0)):>8}  {r['outcome']}")
+    e = out["checkpoints"][0] if out["checkpoints"] else None
+    if e:
+        m, est = e["measured"], e["estimate"]
+        print(f"checkpoint {n}: {m['runs']} planning run(s) measured {money(m['cost_usd'])}; build estimate {money(est['cost_usd'])} for {est['tasks']} task(s){' assumed' if est['assumed'] else ''} x {stages:g} stages x {retry:g} retry")
+    else:
+        print(f"checkpoint {n}: nothing recorded")
+else:
+    for e in out["checkpoints"]:
+        m, est = e["measured"], e["estimate"]
+        print(f"{e['project']:<10} checkpoint {e['checkpoint']:<3} planning {m['runs']:>2} run(s) {money(m['cost_usd']):>9} measured   build {money(est['cost_usd']):>8} estimate{' (tasks assumed)' if est['assumed'] else ''}")
+    for proj, pt in out["projects"].items():
+        print(f"{proj:<10} total {money(pt['total_usd'])}: {money(pt['measured_usd'])} measured over {pt['runs']} run(s), {money(pt['estimate_usd'])} build estimate")
+    if not out["checkpoints"]:
+        print("nothing recorded yet")
+PY
