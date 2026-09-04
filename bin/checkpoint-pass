@@ -27,12 +27,17 @@
 #   way: the only checkout a pass can see is the read-only clone, and the only
 #   write is this script's, under state/.
 #
-# Why there is a gate anyway:
+# Why the tree is compared anyway, and why a difference is only a warning:
 #   `git status` of this repository and of the clone are compared before and
-#   after the run. Any difference means something wrote where nothing should
-#   have, and the output is discarded. permission_denials from the result go in
-#   the ledger too: a model that tried to write is worth knowing about even
-#   when it was stopped.
+#   after the run, and a difference is printed so the human knows the pass may
+#   have read a tree that moved under it. The output is kept: the pass has no
+#   tool that can write, so a change during the run is the human's or another
+#   session's, and discarding paid output over their own edit punishes them for
+#   working in their own repository (2026-09-04, a pebble pass thrown away over
+#   an AGENTS.md edit). If the allow list ever gains Bash, Edit, or Write, this
+#   comparison has to become a gate again. permission_denials from the result
+#   go in the ledger too: a model that tried to write is worth knowing about
+#   even when it was stopped.
 #
 # Why the ledger:
 #   claude -p reports total_cost_usd at list rates on every run, subscription
@@ -235,7 +240,6 @@ mkdir -p "$(dirname "$LEDGER")"
 [ -f "$LEDGER" ] || printf 'ts\tproject\tcheckpoint\tmode\tround\truntime\tmodel\teffort\tinput\tcache_write\tcache_read\toutput\tcost_usd\tsession_id\tduration_ms\tdenials\toutcome\n' > "$LEDGER"
 outcome="ok"
 if [ "$rc" -ne 0 ] || [ "$is_error" = "true" ]; then outcome="error"; fi
-if [ "$before" != "$after" ]; then outcome="gate"; fi
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$project" "$n" "$mode" "$round" "$runtime" "$model" "$effort" \
   "$in_tok" "$cw_tok" "$cr_tok" "$out_tok" "$cost" "$session" "$duration" "$denials" "$outcome" >> "$LEDGER"
@@ -245,11 +249,10 @@ if [ "$outcome" = "error" ]; then
   jq -r '.result // ""' "$result_file" | head -c 2000 >&2
   exit 1
 fi
-if [ "$outcome" = "gate" ]; then
-  echo "error: gate failed. Something changed on disk during the $mode pass; output discarded." >&2
+if [ "$before" != "$after" ]; then
+  echo "note: the tree changed during the $mode pass. The pass cannot write, so this is someone else's edit; the output is kept, but the pass may have read files that moved under it" >&2
   echo "before:" >&2; printf '%s\n' "$before" >&2
   echo "after:" >&2;  printf '%s\n' "$after" >&2
-  exit 1
 fi
 [ "$denials" -eq 0 ] || echo "note: the model asked for $denials tool call(s) it is not allowed; they were denied and the pass continued" >&2
 
