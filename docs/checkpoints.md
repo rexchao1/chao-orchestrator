@@ -53,11 +53,28 @@ The vault link on the review page comes from `config/vault.url` and the prefligh
 Edit the row to switch; `--model` and `--effort` override one pass.
 The build model is the factory execution profile's, set in the cockpit.
 
-## Follow-ups in the factory fork
+## What remains, and how it gets built
 
-Three small changes would close the gaps this design works around.
-None is needed to run the chain.
+Decided on 2026-09-04 from a scoped review: the rest is built through the chain itself, four checkpoints across two projects, in this order.
+Restarts of the factory are the human's, so a fork checkpoint is deployed by hand after it merges.
 
-1. **Attempt cost.** The worker already parses claude's final `result` event and keeps its text. Keep `total_cost_usd` and `usage` too, store them on the attempt, expose them on the Work API. Then `bin/checkpoint-cost` replaces its build estimate with the measured number.
-2. **Execution profile at admission.** `AdmitWorkRequest` has no profile field, so a submission cannot pick the build model. Adding one lets `config/models.tsv`'s build row mean something.
-3. **Actor on the answer API.** `AnswerWork` hardcodes the operator actor. An actor field is what lets a future overseer answer a needs-input question with a citation and be seen doing it.
+| # | Project | Checkpoint | Tasks | Needs |
+|---|---|---|---|---|
+| 1 | factory fork | actor on the answer API, attempt cost capture | 5 | a restart to deploy |
+| 2 | orchestrator | overseer: `bin/checkpoint-watch` polls the checkpoint, answers needs-input from the frozen PRD with a citation as actor overseer, escalates what the PRD does not decide, runs close on merge, never approves | 5 | checkpoint 1 deployed |
+| 3 | factory fork | execution profile at admission, `factory-submit --profile`, so the build row of `config/models.tsv` is real | 3 | a restart to deploy |
+| 4 | orchestrator | approved experiments as task 01 of pebble's cut, pebble through `--json-schema` | 2 | nothing |
+
+The ideas the route passes start from are in `docs/boulders/`, one per project.
+The estimate at list rates is about $12 for each five-task checkpoint and $8 to $9 for the smaller ones, about $40 in all; the first live checkpoint replaces the estimate with measured numbers.
+
+Decisions that shape it:
+
+- **Two human touches stay** until three checkpoints have passed the batch gate with no spec rejected.
+  Rule 3 is unchanged.
+- **An approved experiment runs in the factory** as the first task of the cut, under the broker posture, and its PR records the result for the next PRD to cite.
+- **No second vendor for the critic.** Opus 5 stays the critic; the fresh context is most of the value.
+- **The first live run waits** for the human to say so.
+  Until then no pass has run a model.
+
+Not on the list: the live run, and a second worker (phase 6, deferred).

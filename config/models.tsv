@@ -9,8 +9,9 @@
 #
 # `build` is the factory. Its model is the execution profile's, set in the
 # cockpit, not here, so that row carries prices only and the model column says
-# so. runtime `codex` is reserved: bin/checkpoint-pass refuses it until a codex
-# path exists.
+# so. Every planning row runs on claude: a second vendor for the critic was
+# considered and dropped on 2026-09-04, and bin/checkpoint-pass refuses any
+# other runtime.
 plan	claude	claude-fable-5-1	high	10	50
 critic	claude	claude-opus-5	xhigh	5	25
 build	factory	profile	-	2	10
