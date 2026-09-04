@@ -12,7 +12,7 @@ unknown, and what "done" means.
 | [4. Sandbox and gates](phase-4-sandbox-and-gates.md) | Done, fork commit `ceac419` | Phase 1 | Go |
 | [5. Auto-merge](phase-5-auto-merge.md) | Done, fork commit `ceac419` | Phase 4 | Go |
 | [6. Second worker](phase-6-second-worker.md) | Deferred | Phase 1 | Go, ops |
-| [7. Broker route](phase-7-broker-route.md) | Scoped 2026-09-03 | Phase 4 | Go |
+| [7. Broker route](phase-7-broker-route.md) | Done, fork commit `e6c10f4` | Phase 4 | Go |
 
 Statuses were reconciled on 2026-09-03 from the fork's history.
 Each phase document carries the same status on its first lines.

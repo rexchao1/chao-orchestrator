@@ -7,9 +7,9 @@ as seven plans rather than one. Each plan produces a working, testable result on
 its own, and each is written only when its predecessor has made its details
 knowable.
 
-**Where it stands, 2026-09-03:** Plans 1 through 5 are done. Plan 6 is
-deferred. Plan 7 is scoped and not started. The per-phase table in
-[phases/README.md](phases/README.md) names the commits.
+**Where it stands, 2026-09-03:** Plans 1 through 5 and Plan 7 are done.
+Plan 6 is deferred and unscheduled, so nothing is outstanding.
+The per-phase table in [phases/README.md](phases/README.md) names the commits.
 
 ## Why not one plan
 
@@ -145,19 +145,25 @@ bottleneck, not before.
 
 ### Plan 7: Broker route for sandboxed runs
 
-**Status:** scoped 2026-09-03, [phases/phase-7-broker-route.md](phases/phase-7-broker-route.md).
+**Status:** done, fork commit `e6c10f4`, [phases/phase-7-broker-route.md](phases/phase-7-broker-route.md).
 **Depends on:** Plan 4.
 
-Let a sandboxed run reach third party APIs through the agent-vault broker on
-the host, so the container holds a proxy URL and a CA instead of raw API keys.
-A `broker` network posture, a CA mount, and a handful of proxy variables on the
-sandbox allowlist.
+A sandboxed run reaches third party APIs through the agent-vault broker on the
+host, so the container holds a proxy URL and a CA instead of raw API keys.
+A `broker` network posture on bridge networking, a read-only CA mount, and
+proxy variables derived per container.
+The variables are derived rather than allowlisted: the sandbox allowlist is a
+passthrough filter over the worker's own environment, so allowlisting them
+would have forwarded the host's `127.0.0.1` into a container where that address
+is the container's own loopback.
 
-**Deliverable:** a run with no `GITHUB_TOKEN` in its environment completes a
-GitHub API call through the proxy, and revoking its agent makes that fail.
+**Deliverable, met:** a run with no `GITHUB_TOKEN` in its environment completes
+a GitHub API call through the proxy, and a credential the broker does not
+honour makes the same call fail at the proxy.
+Both are Go tests against the live broker.
 
-**Why now:** the broker exists and works for interactive sessions on every
-device. This is the last hop that keeps keys out of the factory's containers.
+**Why last:** the broker already worked for interactive sessions on every
+device. This was the last hop that keeps keys out of the factory's containers.
 
 ## Dependency order
 
