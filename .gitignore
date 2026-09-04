@@ -9,3 +9,4 @@ state/
 
 # The real project list. config/projects.tsv.example is the committed template.
 config/projects.tsv
+config/vault.*

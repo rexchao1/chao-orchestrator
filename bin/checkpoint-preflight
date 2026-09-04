@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#
+# checkpoint-preflight <project> <n> [--vault NAME]
+#
+# Every host pebble said the checkpoint needs must have a service rule in the
+# vault before a single task is submitted. Reads the Credentials line pebble
+# wrote, lists the vault's services, and reports one line per host: the rule
+# that covers it, or MISSING. Any MISSING fails, and nothing gets submitted
+# until the rule exists and this passes.
+#
+# The check is against names only. The listing the vault CLI prints carries
+# hosts and the names of token keys, never values, and this script prints
+# only hosts and rule names from it. No credential value reaches an agent
+# here or anywhere else in the chain; the broker adds it at request time.
+#
+# The vault name comes from --vault, CHECKPOINT_VAULT, or config/vault.name,
+# in that order. config/vault.* is gitignored: this repository is public.
+#
+# Exit: 0 every host covered or none needed, 1 a host has no rule or the
+# vault could not be listed, 2 usage or pebble has not run.
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+AGENT_VAULT="${CHECKPOINT_AGENT_VAULT:-agent-vault}"
+
+usage() { echo "usage: checkpoint-preflight <project> <n> [--vault NAME]" >&2; exit 2; }
+[ "$#" -ge 2 ] || usage
+project="$1"; n="$2"; shift 2
+vault="${CHECKPOINT_VAULT:-}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --vault) vault="${2:-}"; shift 2 ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
+[[ "$n" =~ ^[0-9]+$ ]] || { echo "error: checkpoint number must be an integer" >&2; exit 2; }
+
+creds="$ORCH_HOME/state/checkpoints/$project/$n/credentials.txt"
+[ -f "$creds" ] || { echo "error: no credentials line at $creds. Run pebble first" >&2; exit 2; }
+line="$(head -n1 "$creds")"
+hosts="$(sed -e 's/^Credentials:[[:space:]]*//' -e 's/,/ /g' <<< "$line" | tr -s ' ' | sed -e 's/^ //' -e 's/ $//')"
+if [ -z "$hosts" ] || [ "$hosts" = "none" ]; then
+  echo "preflight ok: checkpoint $n needs no credentials"
+  exit 0
+fi
+
+[ -n "$vault" ] || { [ -f "$ORCH_HOME/config/vault.name" ] && vault="$(head -n1 "$ORCH_HOME/config/vault.name")"; }
+[ -n "$vault" ] || { echo "error: no vault named. Pass --vault, set CHECKPOINT_VAULT, or write the name to config/vault.name" >&2; exit 2; }
+command -v "$AGENT_VAULT" >/dev/null 2>&1 || { echo "error: $AGENT_VAULT is not on PATH; the vault CLI does the listing" >&2; exit 2; }
+
+listing="$("$AGENT_VAULT" vault service list --vault "$vault" 2>/dev/null)" || {
+  echo "error: could not list the services of vault '$vault'" >&2
+  exit 1
+}
+
+missing=0
+for host in $hosts; do
+  rule="$(awk -v h="$host" '
+    /^[[:space:]]*-?[[:space:]]*name:/ { name = $NF }
+    /^[[:space:]]*host:/ && $NF == h { print name; exit }' <<< "$listing")"
+  if [ -n "$rule" ]; then
+    printf 'ok       %s  rule %s\n' "$host" "$rule"
+  else
+    printf 'MISSING  %s  no service rule in vault %s\n' "$host" "$vault"
+    missing=$((missing + 1))
+  fi
+done
+if [ "$missing" -eq 0 ]; then
+  echo "preflight ok: every host has a rule in vault $vault"
+  exit 0
+fi
+echo "preflight failed: $missing host(s) without a rule. Add the rule in the vault, then run this again. Nothing is submitted until it passes." >&2
+exit 1

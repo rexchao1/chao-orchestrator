@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#
+# checkpoint-route-status <project> <n> <planned|frozen|built>
+#
+# Sets the status word on checkpoint n's line in the route file. The route's
+# line n looks like `n. <name>: <what it gives>. Status: planned`, from the
+# boulder skill. Only that line's status word changes; the rest of the file is
+# the model's and stays as written. bin/checkpoint-pass calls this on freeze
+# and bin/checkpoint-close on close, so the route is never stale by design
+# rather than by discipline.
+#
+# Exit: 0 set, 1 no such line, 2 usage.
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+
+[ "$#" -eq 3 ] || { echo "usage: checkpoint-route-status <project> <n> <planned|frozen|built>" >&2; exit 2; }
+project="$1"; n="$2"; new="$3"
+[[ "$n" =~ ^[0-9]+$ ]] || { echo "error: checkpoint number must be an integer" >&2; exit 2; }
+case "$new" in planned|frozen|built) ;; *) echo "error: status must be planned, frozen, or built" >&2; exit 2 ;; esac
+
+route="$ORCH_HOME/state/checkpoints/$project/route.md"
+[ -f "$route" ] || { echo "error: no route at $route" >&2; exit 2; }
+
+tmp="$(mktemp)"
+hit="$(awk -v n="$n" -v new="$new" -v out="$tmp" '
+  BEGIN { hit = 0 }
+  /^## / { in_cps = ($0 ~ /^## Checkpoints/) }
+  in_cps && $0 ~ ("^" n "\\. ") && match($0, /Status:?[[:space:]]*[a-z]+/) {
+    $0 = substr($0, 1, RSTART - 1) "Status: " new substr($0, RSTART + RLENGTH); hit++
+  }
+  { print > out }
+  END { print hit }' "$route")"
+if [ "$hit" -eq 0 ]; then
+  rm -f "$tmp"
+  echo "error: no line for checkpoint $n with a Status in the Checkpoints section of $route" >&2
+  exit 1
+fi
+mv "$tmp" "$route"
+echo "$route: checkpoint $n Status: $new"

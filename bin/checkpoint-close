@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#
+# checkpoint-close <project> <n>
+#
+# The checkpoint is built: its closure task's pull request merged. This is the
+# one edit that records it, on both files that carry a status:
+#
+#   state/checkpoints/<project>/<n>.md     Status: frozen  ->  Status: built
+#   state/checkpoints/<project>/route.md   line n          ->  Status: built
+#
+# It refuses unless the PRD is frozen, because a checkpoint that was never
+# frozen was never built from a contract, and a built one is already done.
+# It does not ask the factory whether the merge happened: you saw it, or the
+# overseer that will call this saw it. Reporting faithfully is the caller's
+# job; this script's job is that the two files never disagree.
+#
+# Exit: 0 recorded, 2 usage or wrong status.
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+
+[ "$#" -eq 2 ] || { echo "usage: checkpoint-close <project> <n>" >&2; exit 2; }
+project="$1"; n="$2"
+[[ "$n" =~ ^[0-9]+$ ]] || { echo "error: checkpoint number must be an integer" >&2; exit 2; }
+
+dir="$ORCH_HOME/state/checkpoints/$project"
+prd="$dir/$n.md"; route="$dir/route.md"
+[ -f "$prd" ] || { echo "error: no PRD at $prd" >&2; exit 2; }
+status="$(sed -n 's/^Status:[[:space:]]*//p' "$prd" | head -n1)"
+[ "$status" = "frozen" ] || { echo "error: PRD status is '$status'; only a frozen checkpoint closes" >&2; exit 2; }
+
+sed -i.bak 's/^Status:.*/Status: built/' "$prd" && rm -f "$prd.bak"
+echo "$prd: Status: built"
+
+if [ -f "$route" ]; then
+  "$BIN/checkpoint-route-status" "$project" "$n" built
+else
+  echo "note: no route at $route to update" >&2
+fi
+echo "next: bin/checkpoint-loop $project $((n + 1))"
