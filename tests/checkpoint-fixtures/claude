@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+# A stand-in for `claude -p`. Logs its arguments to $STUB_LOG, saves the prompt
+# it was given under $STUB_PROMPTS/<mode>.txt, and answers with the JSON shape
+# claude -p --output-format json produces. Knobs, all environment variables:
+#   STUB_VERDICT=ready|revise   critique verdict            (default revise)
+#   STUB_TASKS=N                how many task files pebble prints (default 2)
+#   STUB_FENCE=1                wrap the text output in a code fence
+#   STUB_FAIL=1                 report is_error and exit 1
+#   STUB_DENY=1                 report one denied Edit call
+#   STUB_FOG=1                  freeze leaves the PRD in fog instead of frozen
+#   STUB_STRAY=<dir>            write a stray file into <dir> during the run
+import json, os, sys
+
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+if os.environ.get("STUB_LOG"):
+    with open(os.environ["STUB_LOG"], "a") as f:
+        f.write(" ".join(args) + "\n")
+mode = "unknown"
+for line in prompt.splitlines():
+    if line.startswith("You are one pass") and "Mode: " in line:
+        mode = line.split("Mode: ", 1)[1].strip().rstrip(".")
+        break
+if os.environ.get("STUB_PROMPTS"):
+    os.makedirs(os.environ["STUB_PROMPTS"], exist_ok=True)
+    with open(os.path.join(os.environ["STUB_PROMPTS"], mode + ".txt"), "w") as f:
+        f.write(prompt)
+if os.environ.get("STUB_STRAY"):
+    with open(os.path.join(os.environ["STUB_STRAY"], "stray.txt"), "w") as f:
+        f.write("a pass wrote where it must not\n")
+
+res = {
+    "type": "result", "subtype": "success", "is_error": False,
+    "session_id": "sess-" + mode, "total_cost_usd": 0.25,
+    "usage": {"input_tokens": 1000, "cache_creation_input_tokens": 200,
+              "cache_read_input_tokens": 5000, "output_tokens": 800},
+    "duration_ms": 1500, "num_turns": 3, "permission_denials": [],
+}
+if os.environ.get("STUB_DENY"):
+    res["permission_denials"] = [{"tool_name": "Edit", "tool_use_id": "t1", "tool_input": {}}]
+if os.environ.get("STUB_FAIL"):
+    res.update({"is_error": True, "subtype": "error_during_execution", "result": "boom"})
+    print(json.dumps(res)); sys.exit(1)
+
+PRD = """# Checkpoint 1: Sign-in
+Project: demo
+Status: {status}
+Route: state/checkpoints/demo/route.md
+
+## Slice
+One login form, nothing else.
+
+## Decisions
+D1. Sessions live in cookies. Cited: src/session.ts:12
+D2. Tokens rotate hourly. {d2}
+
+## Failure modes
+- The cookie expires while the form is open.
+
+## Acceptance checks
+- `npm test` passes.
+- A login round trip completes against staging.
+
+## Credentials
+- api.example.com: send the magic link. Never a value here.
+
+## Experiments
+Proposed: time a cold login against staging.
+
+## Questions
+{questions}
+## Fog
+{fog}
+## Critique log
+{log}"""
+Q = "❓ **Q1** - **Rotation interval**: Hourly or daily? Hourly matches the session ttl, daily is cheaper.\n\n➡️ Hourly, matching the session ttl.\n"
+texts = {
+    "route": "# Route: demo sign-in\n\n## Boulder\nSelf-serve sign-in for demo.\n\n## Checkpoints\n1. Sign-in. Status planned\n2. Password reset. Status planned\n\n## Not on the route\n- SSO\n",
+    "draft": PRD.format(status="draft", d2="Not yet specified: the interval is a guess.", questions=Q, fog="", log=""),
+    "revise": PRD.format(status="draft", d2="Cited: src/auth.ts:9", questions=Q, fog="", log="Round 1\n- F1: accepted, D2 now cites src/auth.ts:9\n"),
+    "freeze": PRD.format(status="frozen", d2="Cited: review answer 2026-09-03", questions="", fog="", log="Round 1\n- F1: accepted, D2 now cites src/auth.ts:9\n"),
+}
+if os.environ.get("STUB_FOG"):
+    texts["freeze"] = PRD.format(status="fog", d2="Not yet specified: needs a prototype", questions="", fog="- Rotation interval: prototype both against staging\n", log="Round 1\n- F1: accepted\n")
+
+if mode == "critique":
+    verdict = os.environ.get("STUB_VERDICT", "revise")
+    findings = [] if verdict == "ready" else [{
+        "id": "F1", "severity": "blocking", "kind": "undecided", "where": "D2",
+        "claim": "D2 is a guess dressed as a decision", "evidence": "src/config.ts:41", "fix": "cite the interval or ask"}]
+    res["structured_output"] = {"round": 1, "verdict": verdict, "findings": findings}
+    res["result"] = json.dumps(res["structured_output"])
+elif mode == "pebble":
+    n = int(os.environ.get("STUB_TASKS", "2"))
+    parts = []
+    for i in range(1, n + 1):
+        name = f"{i:02d}-closure.md" if i == n else f"{i:02d}-task-{i}.md"
+        parts.append(f"=== {name}\n## Task {i}\n\n### What are we building?\nThing {i}, from D1.\n")
+    parts.append("Credentials: api.example.com")
+    res["result"] = "\n".join(parts)
+else:
+    text = texts.get(mode, "unknown mode " + mode)
+    if os.environ.get("STUB_FENCE"):
+        text = "```markdown\n" + text + "\n```"
+    res["result"] = text
+print(json.dumps(res))

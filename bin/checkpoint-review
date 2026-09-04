@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+#
+# checkpoint-review <project> <n>            build, open, print the URL, exit
+# checkpoint-review --wait <project> <n>     block until the human sends answers
+# checkpoint-review --end <project> <n>      close the session
+#
+# The one human gate of a checkpoint. Renders the PRD as a Lavish artifact
+# with a control per question, an approve control per proposed experiment, the
+# credentials it needs, and what the checkpoint has cost so far next to what
+# the whole project has. --wait saves what comes back to
+# state/checkpoints/<project>/<n>.answers.txt, which is the input to
+# bin/checkpoint-pass freeze.
+#
+# Opening and waiting are two commands for the reason bin/spec-render gives:
+# through an agent's shell tool the URL only reaches the reviewer once the
+# command returns, so the command that prints it must not be the one that
+# blocks. The poll is foreground. Never background it.
+#
+# The markdown PRD stays the contract. The HTML is a view of it, rebuilt on
+# every open, never edited by hand, never what the freeze pass reads.
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+LAVISH="${CHECKPOINT_LAVISH:-${SPEC_RENDER_LAVISH:-npx -y lavish-axi}}"
+COST="$BIN/checkpoint-cost"
+
+# Same tailnet binding as bin/spec-render, for the same measured reason: read
+# at run time, never written down, loopback with a warning when absent.
+if [ -z "${LAVISH_AXI_HOST:-}" ]; then
+  LAVISH_AXI_HOST="$(command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -1)"
+fi
+if [ -z "${LAVISH_AXI_HOST:-}" ]; then
+  LAVISH_AXI_HOST=127.0.0.1
+  echo "note: no tailnet address available, binding loopback; the review URL only opens on this machine." >&2
+fi
+export LAVISH_AXI_HOST
+
+usage() {
+  echo "usage: checkpoint-review <project> <n>          build, open, print the review URL, exit" >&2
+  echo "       checkpoint-review --wait <project> <n>   block until answers are sent or the session ends" >&2
+  echo "       checkpoint-review --end <project> <n>    end the review session" >&2
+  exit 2
+}
+
+mode=open
+case "${1:-}" in
+  --wait) mode=wait; shift ;;
+  --end)  mode=end;  shift ;;
+  -*)     usage ;;
+esac
+[ "$#" -eq 2 ] || usage
+project="$1"; n="$2"
+[[ "$n" =~ ^[0-9]+$ ]] || { echo "error: checkpoint number must be an integer" >&2; exit 2; }
+
+dir="$ORCH_HOME/state/checkpoints/$project"
+prd="$dir/$n.md"
+[ -f "$prd" ] || { echo "error: no PRD at $prd" >&2; exit 2; }
+outdir="$ORCH_HOME/.lavish"; mkdir -p "$outdir"
+html="$outdir/checkpoint-$project-$n.html"
+urlfile="$outdir/checkpoint-$project-$n.url"
+answers="$dir/$n.answers.txt"
+
+if [ "$mode" = "wait" ]; then
+  [ -f "$html" ] || { echo "error: no artifact at $html. Run checkpoint-review $project $n first." >&2; exit 2; }
+  [ -f "$urlfile" ] && echo "still open at $(cat "$urlfile")"
+  echo "waiting for answers, this holds the conversation until they send or end"
+  out="$($LAVISH poll "$html")"; rc=$?
+  { echo "### review answers received $(date -u +%Y-%m-%dT%H:%M:%SZ)"; printf '%s\n' "$out"; } >> "$answers"
+  printf '%s\n' "$out"
+  echo
+  echo "saved to $answers"
+  echo "next: bin/checkpoint-pass freeze $project $n --answers $answers"
+  exit $rc
+fi
+
+if [ "$mode" = "end" ]; then
+  [ -f "$html" ] || { echo "error: no artifact at $html" >&2; exit 2; }
+  $LAVISH end "$html"
+  exit $?
+fi
+
+cost_json="$("$COST" "$project" "$n" --json 2>/dev/null || echo '{}')"
+vault_url=""
+[ -f "$ORCH_HOME/config/vault.url" ] && vault_url="$(head -n1 "$ORCH_HOME/config/vault.url")"
+
+PRD="$prd" HTML="$html" PROJECT="$project" N="$n" COST_JSON="$cost_json" VAULT_URL="$vault_url" python3 - <<'PY'
+import html, json, os, re
+
+prd_path, out_path = os.environ["PRD"], os.environ["HTML"]
+project, n = os.environ["PROJECT"], os.environ["N"]
+cost = json.loads(os.environ["COST_JSON"] or "{}")
+vault_url = os.environ["VAULT_URL"]
+text = open(prd_path, encoding="utf-8").read().splitlines()
+esc = html.escape
+
+title, meta, sections, order = f"Checkpoint {n}", {}, {}, []
+current = None
+for line in text:
+    if line.startswith("# ") and current is None:
+        title = line[2:].strip(); continue
+    m = re.match(r"^(Project|Status|Route):\s*(.*)$", line)
+    if m and current is None:
+        meta[m.group(1)] = m.group(2).strip(); continue
+    if line.startswith("## "):
+        current = line[3:].strip(); order.append(current); sections[current] = []; continue
+    if current is not None:
+        sections[current].append(line)
+
+def inline(s):
+    s = esc(s)
+    s = re.sub(r"`([^`]*)`", r"<code>\1</code>", s)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    return s
+
+def block(lines, cls=""):
+    out, in_list, in_pre = [], False, False
+    for line in lines:
+        if line.startswith("```"):
+            if in_pre: out.append("</code></pre>"); in_pre = False
+            else:
+                if in_list: out.append("</ul>"); in_list = False
+                out.append("<pre><code>"); in_pre = True
+            continue
+        if in_pre: out.append(esc(line)); continue
+        if line.startswith("- "):
+            if not in_list: out.append("<ul>"); in_list = True
+            out.append(f"<li>{inline(line[2:])}</li>"); continue
+        if in_list: out.append("</ul>"); in_list = False
+        if not line.strip(): continue
+        klass = ""
+        if re.search(r"\bNot yet specified\b", line): klass = ' class="nys"'
+        out.append(f"<p{klass}>{inline(line)}</p>")
+    if in_list: out.append("</ul>")
+    if in_pre: out.append("</code></pre>")
+    return "\n".join(out)
+
+def questions(lines):
+    qs, cur = [], None
+    for line in lines:
+        m = re.match(r"^❓\s*\*\*(Q\d+)\*\*\s*[-:]\s*\*\*(.+?)\*\*:?\s*(.*)$", line)
+        if m:
+            cur = {"id": m.group(1), "title": m.group(2), "body": [m.group(3)], "rec": []}; qs.append(cur); continue
+        if cur is None: continue
+        m = re.match(r"^➡️\s*(.*)$", line)
+        if m: cur["rec"].append(m.group(1)); cur["_in_rec"] = True; continue
+        if cur.get("_in_rec"): cur["rec"].append(line)
+        else: cur["body"].append(line)
+    return qs
+
+def form(key, title, options, note_placeholder="Optional note", submit="Queue answer"):
+    opts = []
+    for i, (label, value, hint, checked) in enumerate(options):
+        opts.append(f'<label class="opt"><input type="radio" name="answer" value="{esc(value)}"{" checked" if checked else ""}><span><b>{esc(label)}</b>{("<small>" + inline(hint) + "</small>") if hint else ""}</span></label>')
+    return f'''<form class="q" data-lavish-question="{esc(key)}" data-title="{esc(title)}">
+<fieldset>{"".join(opts)}</fieldset>
+<textarea name="note" placeholder="{esc(note_placeholder)}"></textarea>
+<div class="row"><button class="btn" type="submit">{submit}</button><span class="queued" data-queued>queued</span></div>
+</form>'''
+
+parts = []
+parts.append(f'<div class="kicker">Checkpoint review, {esc(project)}</div><h1>{esc(title)}</h1>')
+parts.append('<p class="meta">' + " · ".join(f"{esc(k)}: <b>{esc(v)}</b>" for k, v in meta.items()) + "</p>")
+
+# cost panel
+cp = (cost.get("checkpoints") or [{}])[0] if cost else {}
+meas, est = cp.get("measured", {}), cp.get("estimate", {})
+proj = (cost.get("projects") or {}).get(project, {})
+a = cost.get("assumptions", {})
+parts.append(f'''<section class="cost"><h2>Cost</h2><div class="stats">
+<div class="stat"><b>${meas.get("cost_usd", 0):,.2f}</b><span>this checkpoint, planning, measured over {meas.get("runs", 0)} run(s)</span></div>
+<div class="stat"><b>${est.get("cost_usd", 0):,.2f}</b><span>this checkpoint, build, estimate for {est.get("tasks", 0)} task(s){" assumed" if est.get("assumed") else ""}</span></div>
+<div class="stat hi"><b>${proj.get("total_usd", 0):,.2f}</b><span>whole project: ${proj.get("measured_usd", 0):,.2f} measured + ${proj.get("estimate_usd", 0):,.2f} estimated</span></div>
+</div><p class="fine">Measured is what claude reported at list rates. The build estimate is {a.get("stages", 3):g} stage runs per task, retry factor {a.get("retry", 1.2):g}, ${a.get("per_run_usd", 0):.2f} per run at the build row of config/models.tsv. The factory does not report attempt cost yet.</p></section>''')
+
+for name in order:
+    lines = sections[name]
+    if name == "Questions":
+        qs = questions(lines)
+        parts.append(f'<section><h2>Questions <span class="count">{len(qs)}</span></h2>')
+        if not qs: parts.append("<p>None. The loop settled everything it found.</p>")
+        for q in qs:
+            rec = " ".join(x.strip() for x in q["rec"] if x.strip())
+            body = " ".join(x.strip() for x in q["body"] if x.strip())
+            parts.append(f'<div class="qbox"><h3>{esc(q["id"])}. {inline(q["title"])}</h3><p>{inline(body)}</p><p class="rec">Recommendation: {inline(rec)}</p>')
+            parts.append(form(q["id"], q["id"] + " " + q["title"], [
+                ("Take the recommendation", "take the recommendation: " + rec, "", True),
+                ("Send to research", "send to research: this needs a wayfinder ticket before it can be answered", "Becomes a Fog line at freeze, then a wayfinder ticket.", False),
+                ("Other, in the note", "other, see note", "", False),
+            ], "Your answer, or why the recommendation is wrong"))
+            parts.append("</div>")
+        parts.append("</section>")
+    elif name == "Experiments":
+        proposed = [l for l in lines if l.strip().startswith("Proposed:")]
+        parts.append(f'<section><h2>Experiments</h2>{block(lines)}')
+        for i, p in enumerate(proposed, 1):
+            parts.append(form(f"experiment-{i}", "Experiment " + p[len("Proposed:"):].strip()[:60], [
+                ("Approve", "approve: " + p[len("Proposed:"):].strip(), "", False),
+                ("Decline", "decline: " + p[len("Proposed:"):].strip(), "", True),
+            ], "Optional note", "Queue decision"))
+        parts.append("</section>")
+    elif name == "Credentials":
+        link = f' <a href="{esc(vault_url)}">Add them in the vault</a>.' if vault_url else ""
+        parts.append(f'<section><h2>Credentials</h2>{block(lines)}<p class="fine">Host and purpose only. No value ever passes through an agent.{link}</p></section>')
+    elif name == "Critique log":
+        parts.append(f'<details><summary>Critique log</summary>{block(lines)}</details>')
+    else:
+        parts.append(f'<section><h2>{esc(name)}</h2>{block(lines)}</section>')
+
+parts.append('<section><h2>Anything else</h2>' + form("general", "General note", [("Note", "note", "", True)], "Corrections, additions, anything the questions missed", "Queue note") + "</section>")
+
+page = f'''<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{esc(title)}</title>
+<style>
+  :root {{ --bg:#fbfbfa; --fg:#1a1a18; --mut:#6b6b66; --line:#e3e3df; --code:#f2f2ef; --accent:#7a5cff; --warn:#b3781d; --panel:#ffffff; }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{ --bg:#16161a; --fg:#eceaf0; --mut:#a09eaa; --line:#2c2c34; --code:#22222a; --accent:#a894ff; --warn:#e0a95a; --panel:#1c1c22; }}
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{ background: var(--bg); color: var(--fg); margin: 0; font: 16px/1.6 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }}
+  main {{ max-width: 48rem; margin: 0 auto; padding: 3rem 1.5rem 6rem; }}
+  h1 {{ font-size: 1.9rem; line-height: 1.2; margin: 0 0 .4rem; letter-spacing: -.02em; }}
+  h2 {{ font-size: 1.05rem; margin: 2.2rem 0 .6rem; padding-top: 1.2rem; border-top: 1px solid var(--line); }}
+  h3 {{ font-size: 1rem; margin: 0 0 .3rem; }}
+  .kicker {{ color: var(--mut); font-size: .78rem; text-transform: uppercase; letter-spacing: .1em; margin-bottom: .75rem; }}
+  .meta {{ color: var(--mut); font-size: .9rem; }}
+  .count {{ font-size: .8rem; color: var(--mut); font-weight: 400; margin-left: .4rem; }}
+  ul {{ padding-left: 1.15rem; margin: .5rem 0; }} li {{ margin: .3rem 0; }} p {{ margin: .6rem 0; }}
+  code {{ background: var(--code); padding: .12em .38em; border-radius: 4px; font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; }}
+  pre {{ background: var(--code); padding: .9rem 1rem; border-radius: 8px; overflow-x: auto; border: 1px solid var(--line); }}
+  pre code {{ background: none; padding: 0; }}
+  .nys {{ border-left: 3px solid var(--warn); padding-left: .8rem; }}
+  .stats {{ display: flex; flex-wrap: wrap; gap: .6rem; }}
+  .stat {{ flex: 1 1 12rem; min-width: 0; padding: .7rem .9rem; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }}
+  .stat b {{ display: block; font-size: 1.4rem; letter-spacing: -.01em; }}
+  .stat span {{ font-size: .8rem; color: var(--mut); }}
+  .stat.hi {{ border-color: var(--accent); }}
+  .fine {{ font-size: .82rem; color: var(--mut); }}
+  .qbox {{ margin: 1rem 0 1.4rem; padding: 1rem 1.1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }}
+  .rec {{ border-left: 3px solid var(--accent); padding-left: .8rem; }}
+  .q fieldset {{ border: 0; padding: 0; margin: .6rem 0 0; }}
+  .opt {{ display: grid; grid-template-columns: 1.2rem minmax(0, 1fr); gap: .6rem; align-items: start; padding: .5rem .6rem; border: 1px solid var(--line); border-radius: 8px; margin-top: .4rem; cursor: pointer; }}
+  .opt:has(input:checked) {{ border-color: var(--accent); }}
+  .opt input {{ margin-top: .3rem; accent-color: var(--accent); }}
+  .opt b {{ display: block; font-size: .95rem; }} .opt small {{ display: block; color: var(--mut); }}
+  .q textarea {{ width: 100%; min-height: 3.6rem; margin-top: .6rem; padding: .5rem .7rem; border: 1px solid var(--line); border-radius: 8px; background: var(--code); color: var(--fg); font: inherit; font-size: .95rem; }}
+  .row {{ display: flex; align-items: center; gap: .8rem; margin-top: .6rem; }}
+  .btn {{ height: 2.1rem; padding: 0 .9rem; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; font-size: .9rem; font-weight: 600; cursor: pointer; }}
+  .queued {{ display: none; font-size: .8rem; color: var(--accent); }} .queued.on {{ display: inline; }}
+  details {{ margin-top: 2rem; border-top: 1px solid var(--line); padding-top: 1rem; }} summary {{ cursor: pointer; font-weight: 600; }}
+  .nolavish {{ display: none; margin: 1rem 0; padding: .6rem .8rem; border: 1px solid var(--warn); border-radius: 8px; font-size: .85rem; color: var(--mut); }} .nolavish.on {{ display: block; }}
+</style>
+</head>
+<body>
+<main>
+<div class="nolavish" id="nolavish">Opened without Lavish. Answers stay on this page.</div>
+{"".join(parts)}
+</main>
+<script>
+(function () {{
+  var has = typeof window.lavish !== "undefined" && window.lavish && typeof window.lavish.queuePrompt === "function";
+  if (!has) document.getElementById("nolavish").classList.add("on");
+  Array.prototype.forEach.call(document.querySelectorAll("form[data-lavish-question]"), function (form) {{
+    var key = form.getAttribute("data-lavish-question"), title = form.getAttribute("data-title") || key;
+    var queued = form.querySelector("[data-queued]");
+    form.addEventListener("change", function () {{ if (queued) queued.classList.remove("on"); }});
+    form.addEventListener("submit", function (event) {{
+      event.preventDefault();
+      var data = new FormData(form), answer = data.get("answer") || "", note = (data.get("note") || "").toString().trim();
+      if (!answer && !note) return;
+      var text = "Answer " + title + ": " + answer + (note ? " Note: " + note : "");
+      if (has) window.lavish.queuePrompt(text, {{ tag: "answer", text: title + ": " + (note || answer), element: form, queueKey: key, data: {{ question: key, answer: answer, note: note }} }});
+      if (queued) queued.classList.add("on");
+    }});
+  }});
+}})();
+</script>
+</body>
+</html>'''
+open(out_path, "w", encoding="utf-8").write(page)
+PY
+[ -s "$html" ] || { echo "error: the artifact was not written" >&2; exit 1; }
+
+open_out="$($LAVISH "$html" 2>&1)" || {
+  echo "error: lavish-axi could not open the artifact" >&2
+  printf '%s\n' "$open_out" >&2
+  exit 1
+}
+url="$(grep -o 'http://[^"[:space:]]*' <<< "$open_out" | head -1)"
+printf '%s\n' "$url" > "$urlfile"
+echo "review at $url"
+echo "url also saved at $urlfile"
+echo "give that link to the reviewer, THEN run: checkpoint-review --wait $project $n"

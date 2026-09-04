@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+#
+# checkpoint-pass <mode> <project> <n> [--round R] [--idea FILE] [--answers FILE]
+#                 [--model M] [--effort E] [--no-open-tickets]
+#
+# Runs ONE read-only model pass of the checkpoint loop and writes its output
+# where the next pass expects it. bin/checkpoint-loop chains the first five.
+#
+#   route     --idea FILE      -> state/checkpoints/<project>/route.md
+#   draft     route            -> state/checkpoints/<project>/<n>.md         status draft
+#   critique  PRD              -> state/checkpoints/<project>/<n>.critique-<round>.json
+#   revise    PRD + findings   -> the PRD, rewritten
+#   freeze    PRD + --answers  -> the PRD, rewritten, status frozen or fog
+#   pebble    frozen PRD       -> state/checkpoints/<project>/<n>/tasks/NN-*.md
+#                                 and state/checkpoints/<project>/<n>/credentials.txt
+#
+# The prompt is the installed skill (boulder, checkpoint-critic, or pebble from
+# agent-skills) plus the files above. Prompts for judgment, this script for
+# input and output.
+#
+# Why the model has no write tool:
+#   The pass runs `claude -p --permission-mode dontAsk` with an allow list of
+#   Read, Grep, Glob, WebFetch, and WebSearch. Nothing else is granted, so an
+#   Edit or a Bash call is denied instead of asked about. The model prints the
+#   finished file on stdout and this script writes it. Read-only is structural:
+#   it holds because there is no tool to break it with. INV-2 holds the same
+#   way: the only checkout a pass can see is the read-only clone, and the only
+#   write is this script's, under state/.
+#
+# Why there is a gate anyway:
+#   `git status` of this repository and of the clone are compared before and
+#   after the run. Any difference means something wrote where nothing should
+#   have, and the output is discarded. permission_denials from the result go in
+#   the ledger too: a model that tried to write is worth knowing about even
+#   when it was stopped.
+#
+# Why the ledger:
+#   claude -p reports total_cost_usd at list rates on every run, subscription
+#   or not. Every pass appends one row to state/checkpoints/ledger.tsv, and
+#   bin/checkpoint-cost adds the rows up per checkpoint and per project.
+#
+# Why --max-budget-usd and not --max-turns:
+#   A pass that reads a large project legitimately takes many tool turns. The
+#   bound that matters is money, so that is the one set. Override it with
+#   CHECKPOINT_MAX_BUDGET_USD.
+#
+# Exit: 0 output written, 1 model or gate failure, 2 usage or missing input.
+set -uo pipefail
+
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORCH_HOME="${ORCH_HOME:-$(cd "$BIN/.." && pwd)}"
+PROJECTS="$ORCH_HOME/config/projects.tsv"
+MODELS="${CHECKPOINT_MODELS:-$ORCH_HOME/config/models.tsv}"
+SKILLS_DIR="${CHECKPOINT_SKILLS_DIR:-$HOME/.claude/skills}"
+CLAUDE="${CHECKPOINT_CLAUDE:-claude}"
+MAX_BUDGET="${CHECKPOINT_MAX_BUDGET_USD:-5}"
+LEDGER="$ORCH_HOME/state/checkpoints/ledger.tsv"
+
+usage() {
+  echo "usage: checkpoint-pass <mode> <project> <n> [--round R] [--idea FILE] [--answers FILE]" >&2
+  echo "                       [--model M] [--effort E] [--no-open-tickets]" >&2
+  echo "modes: route draft critique revise freeze pebble    (route takes - for n)" >&2
+  exit 2
+}
+
+[ "$#" -ge 3 ] || usage
+mode="$1"; project="$2"; n="$3"; shift 3
+round=1; idea=""; answers=""; model_override=""; effort_override=""; no_open_tickets=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --round)   round="${2:-}"; shift 2 ;;
+    --idea)    idea="${2:-}"; shift 2 ;;
+    --answers) answers="${2:-}"; shift 2 ;;
+    --model)   model_override="${2:-}"; shift 2 ;;
+    --effort)  effort_override="${2:-}"; shift 2 ;;
+    --no-open-tickets) no_open_tickets=1; shift ;;
+    *) echo "error: unknown argument: $1" >&2; usage ;;
+  esac
+done
+
+case "$mode" in
+  route|draft|critique|revise|freeze|pebble) ;;
+  *) echo "error: unknown mode: $mode" >&2; usage ;;
+esac
+if [ "$mode" != "route" ] && ! [[ "$n" =~ ^[0-9]+$ ]]; then
+  echo "error: checkpoint number must be an integer, got '$n'" >&2; exit 2
+fi
+[[ "$round" =~ ^[0-9]+$ ]] || { echo "error: --round must be an integer" >&2; exit 2; }
+
+[ -f "$PROJECTS" ] || { echo "error: no project map at $PROJECTS" >&2; exit 2; }
+repository="$(awk -F'\t' -v p="$project" '!/^#/ && $1 == p { print $2; exit }' "$PROJECTS")"
+[ -n "$repository" ] || { echo "error: project '$project' is not in $PROJECTS" >&2; exit 2; }
+
+clone="$ORCH_HOME/clones/$project"
+[ -d "$clone" ] || { echo "error: no clone at $clone. Run: bin/orch-clone $project" >&2; exit 2; }
+
+dir="$ORCH_HOME/state/checkpoints/$project"
+mkdir -p "$dir"
+route_file="$dir/route.md"
+prd="$dir/$n.md"
+
+# Which skill carries the judgment for this mode, and which model row runs it.
+case "$mode" in
+  critique) skill="checkpoint-critic"; role="critic" ;;
+  pebble)   skill="pebble";            role="plan" ;;
+  *)        skill="boulder";           role="plan" ;;
+esac
+skill_file="$SKILLS_DIR/$skill/SKILL.md"
+[ -f "$skill_file" ] || {
+  echo "error: skill '$skill' is not installed at $skill_file" >&2
+  echo "hint: in agent-skills run: bin/skills install --only $skill" >&2
+  exit 2
+}
+
+[ -f "$MODELS" ] || { echo "error: no model map at $MODELS" >&2; exit 2; }
+row="$(awk -F'\t' -v r="$role" '!/^#/ && $1 == r { print $2 "\t" $3 "\t" $4; exit }' "$MODELS")"
+[ -n "$row" ] || { echo "error: no '$role' row in $MODELS" >&2; exit 2; }
+IFS=$'\t' read -r runtime model effort <<< "$row"
+model="${CHECKPOINT_MODEL:-$model}"; model="${model_override:-$model}"
+effort="${CHECKPOINT_EFFORT:-$effort}"; effort="${effort_override:-$effort}"
+if [ "$runtime" != "claude" ]; then
+  echo "error: runtime '$runtime' for role '$role' is not supported yet; only claude runs a pass today" >&2
+  exit 2
+fi
+
+# Inputs and the output path, per mode. Missing input is a usage error, not a
+# model failure, so it exits 2 before anything is spent.
+findings=""
+case "$mode" in
+  route)
+    [ -n "$idea" ] && [ -f "$idea" ] || { echo "error: route needs --idea FILE" >&2; exit 2; }
+    out="$route_file" ;;
+  draft)
+    [ -f "$route_file" ] || { echo "error: no route at $route_file. Run: checkpoint-pass route $project - --idea FILE" >&2; exit 2; }
+    [ ! -f "$prd" ] || { echo "error: $prd exists already; critique or revise it, or pick the next number" >&2; exit 2; }
+    out="$prd" ;;
+  critique)
+    [ -f "$prd" ] || { echo "error: no PRD at $prd" >&2; exit 2; }
+    out="$dir/$n.critique-$round.json" ;;
+  revise)
+    [ -f "$prd" ] || { echo "error: no PRD at $prd" >&2; exit 2; }
+    findings="$dir/$n.critique-$round.json"
+    [ -f "$findings" ] || { echo "error: no findings at $findings. Run the critique for round $round first" >&2; exit 2; }
+    out="$prd" ;;
+  freeze)
+    [ -f "$prd" ] || { echo "error: no PRD at $prd" >&2; exit 2; }
+    [ -n "$answers" ] && [ -f "$answers" ] || { echo "error: freeze needs --answers FILE, the saved review answers" >&2; exit 2; }
+    out="$prd" ;;
+  pebble)
+    [ -f "$prd" ] || { echo "error: no PRD at $prd" >&2; exit 2; }
+    status="$(sed -n 's/^Status:[[:space:]]*//p' "$prd" | head -n1)"
+    [ "$status" = "frozen" ] || { echo "error: PRD status is '$status', pebble needs frozen" >&2; exit 2; }
+    [ "$no_open_tickets" -eq 1 ] || {
+      echo "error: pebble needs --no-open-tickets, your assertion that no wayfinder ticket is open for checkpoint $n" >&2
+      exit 2
+    }
+    out="$dir/$n/tasks" ;;
+esac
+if [ "$mode" != "pebble" ] && [ "$mode" != "route" ] && [ "$mode" != "draft" ]; then
+  status="$(sed -n 's/^Status:[[:space:]]*//p' "$prd" | head -n1)"
+  case "$status" in
+    frozen|built) echo "error: PRD status is '$status'. A frozen PRD does not change; a change is a new checkpoint" >&2; exit 2 ;;
+  esac
+fi
+
+# The prompt: the skill body without its frontmatter, then the inputs.
+skill_body="$(awk 'seen >= 2 { print } /^---$/ { seen++ }' "$skill_file")"
+today="$(date -u +%Y-%m-%d)"
+prompt_file="$(mktemp)"; result_file="$(mktemp)"
+trap 'rm -f "$prompt_file" "$result_file"' EXIT
+{
+  echo "You are one pass of a checkpoint loop. Mode: $mode."
+  echo "Project: $project, repository $repository, read-only clone at $clone."
+  echo "Today is $today."
+  echo "You have no write tool. Read whatever you need under the clone, then print the complete output on standard output and nothing else: no preamble, no closing remark, no code fence around the whole file."
+  case "$mode" in
+    route)    echo "Write the route file for the idea below." ;;
+    draft)    echo "Write the PRD for checkpoint $n of the route below, with Status: draft." ;;
+    critique) echo "This is critique round $round. Return the findings JSON for the PRD below." ;;
+    revise)   echo "Apply the round $round findings below to the PRD and print the whole revised PRD, critique log extended." ;;
+    freeze)   echo "Apply the review answers below to the PRD and print the whole PRD with Status: frozen, or Status: fog with a Fog section. Cite answered questions as review answer $today." ;;
+    pebble)   echo "The operator asserts no ticket is open for this checkpoint. Print every task file preceded by a line '=== NN-slug.md', then the Credentials: line." ;;
+  esac
+  echo; echo "## Skill"; echo; printf '%s\n' "$skill_body"
+  if [ "$mode" = "route" ]; then echo; echo "## Idea"; echo; cat "$idea"; fi
+  if [ "$mode" = "draft" ]; then echo; echo "## Route"; echo; cat "$route_file"; fi
+  if [ "$mode" != "route" ] && [ "$mode" != "draft" ]; then echo; echo "## PRD"; echo; cat "$prd"; fi
+  if [ -n "$findings" ]; then echo; echo "## Findings, round $round"; echo; cat "$findings"; fi
+  if [ "$mode" = "freeze" ]; then echo; echo "## Review answers"; echo; cat "$answers"; fi
+} > "$prompt_file"
+
+FINDINGS_SCHEMA='{"type":"object","required":["round","verdict","findings"],"properties":{"round":{"type":"integer"},"verdict":{"type":"string","enum":["revise","ready"]},"findings":{"type":"array","items":{"type":"object","required":["id","severity","kind","where","claim","evidence","fix"],"properties":{"id":{"type":"string"},"severity":{"type":"string","enum":["blocking","major","minor"]},"kind":{"type":"string","enum":["undecided","failure-mode","uncited","oversized","other"]},"where":{"type":"string"},"claim":{"type":"string"},"evidence":{"type":"string"},"fix":{"type":"string"}}}}}}'
+
+args=(-p --model "$model" --permission-mode dontAsk
+      --allowedTools "Read,Grep,Glob,WebFetch,WebSearch"
+      --max-budget-usd "$MAX_BUDGET" --output-format json)
+if [ -n "$effort" ] && [ "$effort" != "-" ]; then args+=(--effort "$effort"); fi
+if [ "$mode" = "critique" ]; then args+=(--json-schema "$FINDINGS_SCHEMA"); fi
+
+# The gate. Both trees must look exactly the same after the run as before it.
+snapshot() {
+  git -C "$ORCH_HOME" status --porcelain 2>/dev/null || echo "(orchestrator: not a git checkout)"
+  echo "--"
+  git -C "$clone" status --porcelain 2>/dev/null || echo "(clone: not a git checkout)"
+}
+before="$(snapshot)"
+
+# CLAUDECODE is unset because a pass is normally started from inside the
+# orchestrator's own claude session, and claude refuses to nest otherwise.
+env -u CLAUDECODE "$CLAUDE" "${args[@]}" < "$prompt_file" > "$result_file" 2>"$result_file.err"
+rc=$?
+
+after="$(snapshot)"
+
+if ! jq -e . "$result_file" >/dev/null 2>&1; then
+  echo "error: claude returned no JSON result (rc=$rc)" >&2
+  head -c 2000 "$result_file" >&2; head -c 2000 "$result_file.err" >&2; rm -f "$result_file.err"
+  exit 1
+fi
+rm -f "$result_file.err"
+
+is_error="$(jq -r '.is_error // false' "$result_file")"
+subtype="$(jq -r '.subtype // ""' "$result_file")"
+cost="$(jq -r '.total_cost_usd // 0' "$result_file")"
+in_tok="$(jq -r '.usage.input_tokens // 0' "$result_file")"
+cw_tok="$(jq -r '.usage.cache_creation_input_tokens // 0' "$result_file")"
+cr_tok="$(jq -r '.usage.cache_read_input_tokens // 0' "$result_file")"
+out_tok="$(jq -r '.usage.output_tokens // 0' "$result_file")"
+session="$(jq -r '.session_id // ""' "$result_file")"
+duration="$(jq -r '.duration_ms // 0' "$result_file")"
+denials="$(jq -r '(.permission_denials // []) | length' "$result_file")"
+
+# Money was spent whatever happens next, so the ledger row is written first.
+mkdir -p "$(dirname "$LEDGER")"
+[ -f "$LEDGER" ] || printf 'ts\tproject\tcheckpoint\tmode\tround\truntime\tmodel\teffort\tinput\tcache_write\tcache_read\toutput\tcost_usd\tsession_id\tduration_ms\tdenials\toutcome\n' > "$LEDGER"
+outcome="ok"
+if [ "$rc" -ne 0 ] || [ "$is_error" = "true" ]; then outcome="error"; fi
+if [ "$before" != "$after" ]; then outcome="gate"; fi
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$project" "$n" "$mode" "$round" "$runtime" "$model" "$effort" \
+  "$in_tok" "$cw_tok" "$cr_tok" "$out_tok" "$cost" "$session" "$duration" "$denials" "$outcome" >> "$LEDGER"
+
+if [ "$outcome" = "error" ]; then
+  echo "error: the $mode pass failed (rc=$rc, subtype=$subtype)" >&2
+  jq -r '.result // ""' "$result_file" | head -c 2000 >&2
+  exit 1
+fi
+if [ "$outcome" = "gate" ]; then
+  echo "error: gate failed. Something changed on disk during the $mode pass; output discarded." >&2
+  echo "before:" >&2; printf '%s\n' "$before" >&2
+  echo "after:" >&2;  printf '%s\n' "$after" >&2
+  exit 1
+fi
+[ "$denials" -eq 0 ] || echo "note: the model asked for $denials tool call(s) it is not allowed; they were denied and the pass continued" >&2
+
+write_text() { # write_text <dest>: the result text, minus a fence wrapping the whole thing
+  jq -r '.result // ""' "$result_file" \
+    | awk 'NR == 1 && /^```/ { skip = 1; next } { lines[++c] = $0 } END { if (c > 0 && lines[c] ~ /^```[[:space:]]*$/) c--; for (i = 1; i <= c; i++) print lines[i] }' \
+    > "$1"
+}
+
+case "$mode" in
+  critique)
+    if jq -e '.structured_output != null' "$result_file" >/dev/null; then
+      jq '.structured_output' "$result_file" > "$out"
+    elif jq -r '.result' "$result_file" | jq -e . >/dev/null 2>&1; then
+      jq -r '.result' "$result_file" | jq . > "$out"
+    else
+      echo "error: the critique did not return JSON" >&2; exit 1
+    fi
+    verdict="$(jq -r '.verdict' "$out")"; count="$(jq -r '.findings | length' "$out")"
+    echo "pass critique $project $n round $round: $model $effort, verdict $verdict, $count finding(s), \$$cost, wrote $out" ;;
+  pebble)
+    rm -rf "$out"; mkdir -p "$out"
+    write_text "$result_file.txt"
+    awk -v dir="$out" '
+      /^=== / { if (fn != "") close(dir "/" fn); fn = $2; next }
+      /^Credentials:/ { cred = $0; next }
+      fn != "" { print > (dir "/" fn) }
+      END { if (cred != "") print cred > (dir "/../credentials.txt") }' "$result_file.txt"
+    rm -f "$result_file.txt"
+    count="$(ls "$out"/*.md 2>/dev/null | wc -l | tr -d ' ')"
+    bad="$(ls "$out" | grep -v -E '^[0-9][0-9]-[a-z0-9-]+\.md$' || true)"
+    [ -z "$bad" ] || { echo "error: task file names must look like NN-slug.md, got: $bad" >&2; exit 1; }
+    [ "$count" -gt 0 ] || { echo "error: pebble produced no task files" >&2; exit 1; }
+    if [ "$count" -gt 5 ]; then
+      echo "error: oversized. pebble cut $count tasks and the split rule allows 5. Split the checkpoint; the tasks are in $out for reading only" >&2
+      exit 1
+    fi
+    for f in "$out"/*.md; do
+      words="$(wc -w < "$f" | tr -d ' ')"
+      [ "$words" -le 700 ] || echo "note: $(basename "$f") is $words words, over the 700 word ceiling. Split it before submitting" >&2
+    done
+    echo "pass pebble $project $n: $model $effort, $count task(s), \$$cost, wrote $out"
+    [ -f "$out/../credentials.txt" ] && echo "credentials: $(cat "$out/../credentials.txt")" ;;
+  *)
+    [ -f "$out" ] && cp "$out" "$out.prev"
+    write_text "$out"
+    [ -s "$out" ] || { echo "error: the $mode pass printed nothing" >&2; exit 1; }
+    if [ "$mode" != "route" ]; then
+      status="$(sed -n 's/^Status:[[:space:]]*//p' "$out" | head -n1)"
+      [ -n "$status" ] || echo "note: the PRD has no Status: line" >&2
+    fi
+    echo "pass $mode $project $n round $round: $model $effort, \$$cost, ${in_tok}+${cr_tok} in, ${out_tok} out, wrote $out" ;;
+esac

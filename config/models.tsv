@@ -1,0 +1,16 @@
+# role	runtime	model	effort	price_in	price_out
+#
+# One row per role. bin/checkpoint-pass reads `plan` for route, draft, revise,
+# freeze, and pebble passes, and `critic` for critique passes. Change a model
+# or an effort here and the next pass uses it; --model and --effort on a single
+# pass override a row once. effort is claude's --effort: low, medium, high,
+# xhigh, max. Prices are dollars per million tokens and feed only
+# bin/checkpoint-cost's estimates; measured passes use the cost claude reports.
+#
+# `build` is the factory. Its model is the execution profile's, set in the
+# cockpit, not here, so that row carries prices only and the model column says
+# so. runtime `codex` is reserved: bin/checkpoint-pass refuses it until a codex
+# path exists.
+plan	claude	claude-fable-5-1	high	10	50
+critic	claude	claude-opus-5	xhigh	5	25
+build	factory	profile	-	2	10
