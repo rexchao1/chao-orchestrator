@@ -4,8 +4,9 @@
 # slash separated parts. A URL form has five parts and is rejected with
 # 400 invalid_repository.
 # "pipeline" is optional and names one from GET /api/v1/pipelines. Empty means
-# the server's default single stage pipeline. Anything that should be reviewed
-# needs a three stage pipeline: see Gap 10 and Gap 11 in fork-notes.md.
+# the server's default single stage pipeline. Reviewed work should select a
+# pipeline ending in Factory delivery; project-specific pipelines can put one
+# canonical suite in a model-free code stage.
 # Delivery is deliberately absent. It is a per project setting held by the
 # server and set in the cockpit, and the orchestrator must not override it.
 scratch	github.com/rexchao1/factory-scratch	Implement, review, deliver

@@ -8,30 +8,35 @@ description: Send an approved spec to the factory queue. Use after triage says i
 You own the decision to send. You do not own the payload.
 
 ```bash
-bin/factory-submit --project <name> --name "<title>" --spec-file <path>
+bin/factory-submit --project <name> --name "<title>" --spec-file <path> \
+  --assurance fast|reviewed
 ```
 
 Write the spec to a file first. Never pass it as an argument: quoting will
 corrupt it eventually, and the script reads a file precisely so that cannot
 happen.
 
-## Reviewed work needs the three stage pipeline
+## Choose assurance explicitly
 
-The project map names a default pipeline. `--pipeline` overrides it by name,
-and the script resolves the name against the factory's own list, so you never
-write an id.
+Use `--assurance fast` only when triage classified the request as isolated.
+Use `--assurance reviewed` for spec-worthy work. Reviewed is the default, but
+name it explicitly so the decision is visible in the submission.
+
+The project map names the reviewed pipeline. Fast selects the factory's `Fast`
+pipeline. `--pipeline` can override either by name, and the script resolves the
+name against the factory's own list, so you never write an id.
 
 ```bash
 bin/factory-submit --project <name> --name "<title>" --spec-file <path> \
   --pipeline "Implement, review, deliver"
 ```
 
-Use a three stage pipeline for anything that should be reviewed before it is
-delivered, which is everything triage sent to a spec. Two stages cannot do it:
-`Gap 10` and `Gap 11` in ChaoFactory's `fork-notes.md` mean a reviewing stage
-that also reports the outcome loses its verdict, and only the final stage is
-told the publish branch. If you get the name wrong the script prints the real
-ones, so guess and read rather than asking them.
+Use the reviewed pipeline for everything triage sent to a spec. Its canonical
+suite runs once in a model-free code stage. Review consumes that evidence and
+reruns a check only for a specific finding. Factory's delivery stage pushes and
+opens the pull request without starting another model. If you get a pipeline
+name wrong the script prints the real ones, so read that list rather than
+asking the user.
 
 ## You do not choose delivery
 

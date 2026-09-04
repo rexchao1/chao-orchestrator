@@ -58,10 +58,12 @@ if [ "$#" -eq 1 ]; then
         (if (.latest_progress // "") != "" then "  progress " + .latest_progress else empty end),
         (if (.terminal_message // "") != "" then "  note    " + ((.terminal_message | split("\n")) | join(" ")) else empty end),
         (if (.delivery // "") == "pr+automerge" and (.state // "") == "ready" then
-           (if ((.terminal_message // "") | test("Automatic merge was refused")) then
+           (if any((.updates // [])[]?; .status == "merged" and .actor == "system") then
+              "  merge   completed by Factory"
+            elif ((.terminal_message // "") | test("Automatic merge was refused")) then
               "  merge   refused: " + (((.terminal_message | split("\n")) | map(select(test("Automatic merge was refused"))) | .[0]) | sub("^Automatic merge was refused: "; ""))
             else
-              "  merge   not observable. No refusal was recorded, but a successful merge writes only a ledger row and no API route exposes it. See Gap 12."
+              "  merge   pending or not attempted"
             end)
          else empty end),
         "")

@@ -35,7 +35,7 @@ assert_contains "API error is reported, not swallowed" "storage_unavailable" "$o
 # 3. Run detail. GET /api/v1/runs/{id} returns {"run":..,"sessions":..}, NOT a
 #    flat run, and publish_branch lives on session.target, not on the session.
 #    Both were measured against the live host on 2026-08-25.
-DETAIL='{"run":{"id":"81b799f3-b81e-461d-8aaa-93adbe174798","state":"succeeded","source":"manual","task":{"name":"Phase 5 auto-merge sliver v2 (aabbccdd)","submitted_name":"Phase 5 auto-merge sliver v2"}},"sessions":[{"id":"2425fa21-24a0-4c85-a982-546093896f31","state":"ready","delivery":"pr+automerge","pull_request_url":"https://github.com/rexchao1/factory-scratch/pull/4","terminal_message":"Pushed reviewed commit adding PHASE5.md and opened PR #4 against main.","target":{"publish_branch":"factory/work-2425fa2124a04c85"},"stages":[{"position":0,"name":"Implement","state":"succeeded"},{"position":1,"name":"Review","state":"succeeded"},{"position":2,"name":"Deliver","state":"succeeded"}]}]}'
+DETAIL='{"run":{"id":"81b799f3-b81e-461d-8aaa-93adbe174798","state":"succeeded","source":"manual","task":{"name":"Phase 5 auto-merge sliver v2 (aabbccdd)","submitted_name":"Phase 5 auto-merge sliver v2"}},"sessions":[{"id":"2425fa21-24a0-4c85-a982-546093896f31","state":"ready","delivery":"pr+automerge","pull_request_url":"https://github.com/rexchao1/factory-scratch/pull/4","terminal_message":"Pushed reviewed commit adding PHASE5.md and opened PR #4 against main.","target":{"publish_branch":"factory/work-2425fa2124a04c85"},"updates":[{"status":"ready","actor":"agent"},{"status":"merged","actor":"system"}],"stages":[{"position":0,"name":"Implement","state":"succeeded"},{"position":1,"name":"Review","state":"succeeded"},{"position":2,"name":"Deliver","state":"succeeded"}]}]}'
 
 fake_api_start 18085 "200" "$DETAIL"
 det="$(FACTORY_BASE=http://127.0.0.1:18085 "$ST" 81b799f3-b81e-461d-8aaa-93adbe174798 2>/dev/null)"
@@ -56,9 +56,8 @@ else
   ok "prints no nulls"
 fi
 
-# 4. On pr+automerge the script must not claim a merge it cannot see. The
-#    merged ledger row is not exposed by any API route: see Gap 12.
-assert_contains "does not claim a merge it cannot observe" "not observable" "$det"
+# 4. Run detail exposes the durable system-authored merge ledger row.
+assert_contains "reports an observed Factory merge" "completed by Factory" "$det"
 
 # 5. A refused automatic merge IS observable, because recordMergeRefusal
 #    appends the reason to sessions.terminal_message.

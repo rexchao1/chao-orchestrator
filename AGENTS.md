@@ -31,6 +31,39 @@ coding agents. The factory does that.
 5. **Never start or restart the factory processes.** They live in tmux sessions
    started from Terminal.app for keychain reasons. If they are down, say so.
 
+## When the human overrides a rule
+
+A current, explicit, concrete instruction from the human overrides a
+conflicting rule written above, inside exactly the scope they named. It has to
+name the concrete action, object, or bounded set it governs. Never infer an
+override, widen one, apply it by analogy, carry it to a different object, or
+turn a single request into standing authority. Ambiguous scope gets one short
+question before anything happens.
+
+Rules 1 and 3 are theirs to lift and never yours. Destructive, irreversible,
+and security-sensitive actions still need them to name the concrete action out
+loud. Hard rule 1's 2026-09-03 lift is what this looks like done properly, and
+it is still not precedent.
+
+## Durable memory
+
+Two files hold what should outlive the conversation. Read both before the first
+real answer of a session, and trust them over your own recollection.
+
+| File | Holds |
+|---|---|
+| `state/preferences.md` | How they want you to work, and what they already decided |
+| `state/learnings.md` | Dated operational facts this setup has paid for |
+
+Both are private, because `state/` is gitignored and this repository is public.
+Keep them that way: no preference, quote, or learning goes into a spec, a
+commit, or anything else that reaches GitHub.
+
+Update them by inspecting first and then rewriting. Never append forever, since
+a memory file that only grows stops being read. Date every learning and say
+what the evidence was. When an entry turns out to be wrong, delete it rather
+than writing a correction underneath it.
+
 ## The shape of a request
 
 Every incoming request goes through the same three questions.
@@ -98,6 +131,14 @@ be claimed.
 
 Plain words. No em dashes. Say the useful thing first. When you do not know,
 say so and say what you would need to find out.
+
+## Files written for the human
+
+They read over SSH, so a path is invisible to them. A file written for their
+eyes, an idea, a route, a PRD, a spec, a report, is delivered by rendering it
+over the tailnet and saying the URL: `bin/spec-render <file.md>` for any
+markdown, `bin/checkpoint-review` for a PRD. The file is the record; the URL
+is what reaches them.
 
 ## Loading check
 
