@@ -13,6 +13,7 @@
 #   freeze    PRD + --answers  -> the PRD, rewritten, status frozen or fog
 #   pebble    frozen PRD       -> state/checkpoints/<project>/<n>/tasks/NN-*.md
 #                                 and state/checkpoints/<project>/<n>/credentials.txt
+#                                 and state/checkpoints/<project>/<n>/boulders.json
 #
 # The prompt is the installed skill (boulder, checkpoint-critic, or pebble from
 # agent-skills) plus the files above. Prompts for judgment, this script for
@@ -292,6 +293,15 @@ case "$mode" in
       fn != "" { print > (dir "/" fn) }
       END { if (cred != "") print cred > (dir "/../credentials.txt") }' "$result_file.txt"
     rm -f "$result_file.txt"
+    # boulders.json groups the tasks into the big chunks the roadmap page draws.
+    # It sits beside tasks/ rather than inside it, so tasks/ stays task files only.
+    manifest="$dir/$n/boulders.json"
+    rm -f "$manifest"
+    if [ -f "$out/boulders.json" ]; then
+      mv "$out/boulders.json" "$manifest"
+      jq -e '.boulders | arrays and length > 0' "$manifest" >/dev/null 2>&1 || {
+        echo "error: boulders.json is not valid JSON with a non-empty .boulders array" >&2; exit 1; }
+    fi
     count="$(ls "$out"/*.md 2>/dev/null | wc -l | tr -d ' ')"
     bad="$(ls "$out" | grep -v -E '^[0-9][0-9]-[a-z0-9-]+\.md$' || true)"
     [ -z "$bad" ] || { echo "error: task file names must look like NN-slug.md, got: $bad" >&2; exit 1; }
@@ -304,6 +314,23 @@ case "$mode" in
       words="$(wc -w < "$f" | tr -d ' ')"
       [ "$words" -le 700 ] || echo "note: $(basename "$f") is $words words, over the 700 word ceiling. Split it before submitting" >&2
     done
+    if [ -f "$manifest" ]; then
+      # A pebble the manifest forgot still renders, in a catch-all boulder, so the
+      # page never hides work. A pebble it invents is a real error.
+      absent=""
+      for slug in $(jq -r '.boulders[].pebbles[]' "$manifest"); do
+        [ -f "$out/$slug.md" ] || absent="$absent $slug"
+      done
+      [ -z "$absent" ] || { echo "error: boulders.json names pebbles with no task file:$absent" >&2; exit 1; }
+      for f in "$out"/*.md; do
+        slug="$(basename "$f" .md)"
+        jq -e --arg s "$slug" 'any(.boulders[].pebbles[]; . == $s)' "$manifest" >/dev/null 2>&1 \
+          || echo "note: $slug is in no boulder, so the page shows it in a catch-all" >&2
+      done
+      echo "boulders: $(jq -r '[.boulders[].title] | join(", ")' "$manifest")"
+    else
+      echo "note: no boulders.json, so the page shows this checkpoint's tasks as one boulder" >&2
+    fi
     echo "pass pebble $project $n: $model $effort, $count task(s), \$$cost, wrote $out"
     [ -f "$out/../credentials.txt" ] && echo "credentials: $(cat "$out/../credentials.txt")" ;;
   *)

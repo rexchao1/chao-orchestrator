@@ -7,30 +7,18 @@ coding agents. The factory does that.
 
 ## Hard rules, in priority order
 
-1. **Never write to a repository other than this one.** Not to `clones/`'s
-   upstreams, not to the worker's caches at `~/.factory/workers/`, not to
-   anything under `~/Projects/` other than this directory. `clones/` is a
-   reading cache. This is `INV-2`, and `bin/inv2-probe` tests it for real.
-
-   Lifted once, by the human, on 2026-09-03, to build Phase 7 in
-   `~/Projects/factory` directly. See `docs/factory/phases/phase-7-broker-route.md`.
-   That is the whole exception: one task, named, granted in the conversation
-   before any write happened. A probe baseline taken before that date reports
-   those commits as a violation, and it is right to. Do not read this as
-   precedent. The rule is not yours to lift, and asking is the move, not
-   deciding.
-2. **Never improvise an API payload.** `bin/` owns every request. If a script
+1. **Never improvise an API payload.** `bin/` owns every request. If a script
    does not do what you need, say so; do not reach for `curl`.
-3. **Never approve on the human's behalf.** `pre_approved: true` asserts that
+2. **Never approve on the human's behalf.** `pre_approved: true` asserts that
    they saw the spec. Only send it after they actually did. Submitting no
    longer stops for a permission prompt, so nothing outside this rule enforces
    it. When you have several things to send, show them all first and wait for a
    go; see the batch section in `skills/submit`.
-4. **Report outcomes faithfully.** If a run failed, say it failed and show what
+3. **Report outcomes faithfully.** If a run failed, say it failed and show what
    the factory said. Never soften a failure into progress.
-5. **Never start or restart the factory processes.** They live in tmux sessions
+4. **Never start or restart the factory processes.** They live in tmux sessions
    started from Terminal.app for keychain reasons. If they are down, say so.
-6. **On the start of every new Orchestrator session, be sure that the project user is working on is git pulled and updated with its GitHub repo. At the end of every session, make sure the project is pushed.
+5. **On the start of every new Orchestrator session, be sure that the project user is working on is git pulled and updated with its GitHub repo. At the end of every session, make sure the project is pushed.
 
 ## When the human overrides a rule
 
@@ -41,10 +29,9 @@ override, widen one, apply it by analogy, carry it to a different object, or
 turn a single request into standing authority. Ambiguous scope gets one short
 question before anything happens.
 
-Rules 1 and 3 are theirs to lift and never yours. Destructive, irreversible,
-and security-sensitive actions still need them to name the concrete action out
-loud. Hard rule 1's 2026-09-03 lift is what this looks like done properly, and
-it is still not precedent.
+Rule 2 is theirs to lift and never yours. Destructive, irreversible, and
+security-sensitive actions still need them to name the concrete action out
+loud.
 
 ## Durable memory
 

@@ -4,6 +4,8 @@
 # claude -p --output-format json produces. Knobs, all environment variables:
 #   STUB_VERDICT=ready|revise   critique verdict            (default revise)
 #   STUB_TASKS=N                how many task files pebble prints (default 2)
+#   STUB_NO_BOULDERS=1          pebble prints no boulders.json
+#   STUB_BOULDER_GHOST=1        the manifest names a pebble with no task file
 #   STUB_FENCE=1                wrap the text output in a code fence
 #   STUB_FAIL=1                 report is_error and exit 1
 #   STUB_DENY=1                 report one denied Edit call
@@ -93,9 +95,22 @@ if mode == "critique":
 elif mode == "pebble":
     n = int(os.environ.get("STUB_TASKS", "2"))
     parts = []
+    slugs = []
     for i in range(1, n + 1):
         name = f"{i:02d}-closure.md" if i == n else f"{i:02d}-task-{i}.md"
+        slugs.append(name[:-3])
         parts.append(f"=== {name}\n## Task {i}\n\n### What are we building?\nThing {i}, from D1.\n")
+    if not os.environ.get("STUB_NO_BOULDERS"):
+        build, close = (slugs[:-1], slugs[-1:]) if n > 1 else ([], slugs)
+        boulders = []
+        if build:
+            boulders.append({"id": "B1", "title": "Build it",
+                             "statement": "The build tasks.", "pebbles": build})
+        boulders.append({"id": f"B{len(boulders) + 1}", "title": "Close it",
+                         "statement": "The closure task.", "pebbles": close})
+        if os.environ.get("STUB_BOULDER_GHOST"):
+            boulders[0]["pebbles"] = ["99-does-not-exist"]
+        parts.append("=== boulders.json\n" + json.dumps({"checkpoint": 1, "boulders": boulders}, indent=2))
     parts.append("Credentials: api.example.com")
     res["result"] = "\n".join(parts)
 else:

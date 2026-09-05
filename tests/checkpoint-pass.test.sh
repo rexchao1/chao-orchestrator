@@ -113,6 +113,23 @@ assert_contains "pebble task files carry the task" "### What are we building?" "
 assert_eq "pebble records the credentials line" "Credentials: api.example.com" "$(cat "$DIR/1/credentials.txt")"
 assert_contains "pebble reports the credentials" "credentials: Credentials: api.example.com" "$out"
 assert_contains "pebble uses the plan model" "--model claude-fable-5-1" "$(tail -n1 "$STUB_LOG")"
+
+# boulders.json groups the tasks into the chunks the roadmap page draws.
+assert_eq "pebble writes the boulder manifest" "2" "$(jq -r '.boulders | length' "$DIR/1/boulders.json")"
+assert_eq "the manifest names every task" "01-task-1 02-closure" "$(jq -r '[.boulders[].pebbles[]] | join(" ")' "$DIR/1/boulders.json")"
+assert_eq "the manifest sits beside tasks, not inside" "" "$(ls "$DIR/1/tasks/boulders.json" 2>/dev/null)"
+assert_contains "pebble reports the boulders" "boulders: Build it, Close it" "$out"
+
+# A manifest naming a pebble that has no task file is a real error.
+out="$(STUB_BOULDER_GHOST=1 "$PASS" pebble demo 1 --no-open-tickets 2>&1)"; rc=$?
+assert_eq "a manifest naming a missing pebble fails" "1" "$rc"
+assert_contains "the missing pebble is named" "99-does-not-exist" "$out"
+
+# No manifest is not an error: the page falls back to one boulder per checkpoint.
+out="$(STUB_NO_BOULDERS=1 "$PASS" pebble demo 1 --no-open-tickets 2>&1)"; rc=$?
+assert_eq "a pebble pass without a manifest still passes" "0" "$rc"
+assert_contains "a missing manifest is noted" "no boulders.json" "$out"
+assert_eq "a failed manifest does not linger" "" "$(ls "$DIR/1/boulders.json" 2>/dev/null)"
 out="$(STUB_TASKS=6 "$PASS" pebble demo 1 --no-open-tickets 2>&1)"; rc=$?
 assert_eq "six tasks is oversized" "1" "$rc"
 assert_contains "oversized says so" "oversized" "$out"
