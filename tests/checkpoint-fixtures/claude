@@ -11,6 +11,7 @@
 #   STUB_DENY=1                 report one denied Edit call
 #   STUB_FOG=1                  freeze leaves the PRD in fog instead of frozen
 #   STUB_STRAY=<dir>            write a stray file into <dir> during the run
+#   STUB_MARKER_SRC=<file>      copy <file>, if it exists, to $STUB_MARKER_COPY
 import json, os, sys
 
 args = sys.argv[1:]
@@ -30,6 +31,12 @@ if os.environ.get("STUB_PROMPTS"):
 if os.environ.get("STUB_STRAY"):
     with open(os.path.join(os.environ["STUB_STRAY"], "stray.txt"), "w") as f:
         f.write("a pass wrote where it must not\n")
+# The live-pass marker only exists while this process runs, so the only way to
+# see it from a test is to look for it from in here.
+if os.environ.get("STUB_MARKER_COPY"):
+    src = os.environ.get("STUB_MARKER_SRC", "")
+    with open(os.environ["STUB_MARKER_COPY"], "w") as f:
+        f.write(open(src).read() if src and os.path.exists(src) else "")
 
 res = {
     "type": "result", "subtype": "success", "is_error": False,

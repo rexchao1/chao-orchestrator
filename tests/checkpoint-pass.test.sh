@@ -149,4 +149,26 @@ assert_eq "the ledger counts denials" "1" "$(awk -F'\t' '$16 == "1"' "$LEDGER" |
 stray="$(cd "$WORK" && ls | grep -v -E '^(config|state|clones|skills|idea.txt|claude-args.log|prompts)$')"
 [ -z "$stray" ] && ok "passes write only under state/" || notok "unexpected files in the orchestrator home: $stray"
 
+# The live-pass marker. The ledger only gains its row once a pass finishes, so
+# without this file a pass that is turning right now is invisible to anything
+# reading state/, which is the whole job of the Planning page.
+marker="$DIR/passes/1.json"
+copy="$WORK/state/marker-copy.json"
+STUB_MARKER_SRC="$marker" STUB_MARKER_COPY="$copy" "$PASS" pebble demo 1 --no-open-tickets >/dev/null 2>&1
+[ -s "$copy" ] && ok "the marker exists while the pass runs" || notok "no marker while the pass ran"
+assert_eq "the marker names the mode"  "pebble"            "$(jq -r '.mode  // ""' "$copy")"
+assert_eq "the marker names the model" "claude-fable-5-1"  "$(jq -r '.model // ""' "$copy")"
+assert_eq "the marker names the round" "1"                 "$(jq -r '.round // ""' "$copy")"
+[ -n "$(jq -r '.started // ""' "$copy")" ] && ok "the marker says when it started" || notok "the marker has no start time"
+[ -e "$marker" ] && notok "the marker outlived the pass" || ok "the marker is gone once the pass ends"
+
+# A pass that dies must not leave a file behind claiming it is still turning.
+STUB_FAIL=1 "$PASS" pebble demo 1 --no-open-tickets >/dev/null 2>&1
+[ -e "$marker" ] && notok "a failed pass left its marker behind" || ok "a failed pass leaves no marker behind"
+
+# A route pass belongs to the project, not to any one checkpoint.
+rm -f "$DIR/route.md"
+STUB_MARKER_SRC="$DIR/passes/-.json" STUB_MARKER_COPY="$copy" "$PASS" route demo - --idea "$WORK/idea.txt" >/dev/null 2>&1
+assert_eq "a route pass marks the project" "route" "$(jq -r '.mode // ""' "$copy")"
+
 exit "$TESTS_FAILED"

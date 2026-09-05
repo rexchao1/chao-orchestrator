@@ -15,6 +15,9 @@
 #                                 and state/checkpoints/<project>/<n>/credentials.txt
 #                                 and state/checkpoints/<project>/<n>/boulders.json
 #
+# While it runs it also holds state/checkpoints/<project>/passes/<n>.json, so
+# a reader can tell a pass is turning before the ledger row exists.
+#
 # The prompt is the installed skill (boulder, checkpoint-critic, or pebble from
 # agent-skills) plus the files above. Prompts for judgment, this script for
 # input and output.
@@ -173,7 +176,17 @@ fi
 skill_body="$(awk 'seen >= 2 { print } /^---$/ { seen++ }' "$skill_file")"
 today="$(date -u +%Y-%m-%d)"
 prompt_file="$(mktemp)"; result_file="$(mktemp)"
-trap 'rm -f "$prompt_file" "$result_file"' EXIT
+
+# The marker says a pass is turning right now. The ledger only gains its row
+# after one finishes, so without this a running pass is invisible to anything
+# reading state/, which is the one thing the Planning page exists to show. It
+# is removed on every exit path, and the reader ignores a stale one, so a
+# killed pass cannot pin the page on a claim that is no longer true.
+pass_marker="$dir/passes/$n.json"
+mkdir -p "$dir/passes"
+printf '{"mode":"%s","round":%s,"model":"%s","started":"%s"}\n' \
+  "$mode" "$round" "$model" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$pass_marker"
+trap 'rm -f "$prompt_file" "$result_file" "$pass_marker"' EXIT
 {
   echo "You are one pass of a checkpoint loop. Mode: $mode."
   echo "Project: $project, repository $repository, read-only clone at $clone."
