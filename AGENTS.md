@@ -30,6 +30,7 @@ coding agents. The factory does that.
    the factory said. Never soften a failure into progress.
 5. **Never start or restart the factory processes.** They live in tmux sessions
    started from Terminal.app for keychain reasons. If they are down, say so.
+6. **On the start of every new Orchestrator session, be sure that the project user is working on is git pulled and updated with its GitHub repo. At the end of every session, make sure the project is pushed.
 
 ## When the human overrides a rule
 

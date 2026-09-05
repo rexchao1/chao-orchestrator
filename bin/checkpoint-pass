@@ -186,6 +186,16 @@ trap 'rm -f "$prompt_file" "$result_file"' EXIT
     freeze)   echo "Apply the review answers below to the PRD and print the whole PRD with Status: frozen, or Status: fog with a Fog section. Cite answered questions as review answer $today." ;;
     pebble)   echo "The operator asserts no ticket is open for this checkpoint. Print every task file preceded by a line '=== NN-slug.md', then the Credentials: line." ;;
   esac
+  # A word cap on the parts a person reads, and only those parts. The factory
+  # cockpit shows the boulder statement, the checkpoint summaries, and the
+  # pebble titles on one page, so a statement that runs to four hundred words
+  # stops being read there. The body of a PRD or a task file is uncapped: it
+  # is the record the builder works from, and shortening that loses evidence.
+  case "$mode" in
+    route)               echo "Length: keep the Boulder statement under 120 words and each numbered checkpoint line under 30. These are read on a roadmap page, not in a document." ;;
+    draft|revise|freeze) echo "Length: keep the opening statement, the part that says what this checkpoint is, under 200 words. The rest of the PRD is not capped." ;;
+    pebble)              echo "Length: keep each task file's opening statement under 30 words. The rest of the task file is not capped." ;;
+  esac
   echo; echo "## Skill"; echo; printf '%s\n' "$skill_body"
   if [ "$mode" = "route" ]; then echo; echo "## Idea"; echo; cat "$idea"; fi
   if [ "$mode" = "draft" ]; then echo; echo "## Route"; echo; cat "$route_file"; fi

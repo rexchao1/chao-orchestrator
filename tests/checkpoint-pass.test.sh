@@ -73,13 +73,16 @@ assert_contains "revise rewrote the PRD" "D2 now cites src/auth.ts:9" "$(cat "$D
 [ -f "$DIR/1.md.prev" ] && ok "revise keeps the previous PRD" || notok "no .prev kept"
 assert_contains "revise sees the findings" "D2 is a guess dressed as a decision" "$(cat "$STUB_PROMPTS/revise.txt")"
 
-# The gate: a pass that leaves a trace on disk is discarded.
+# A tree change under a pass: the pass has no tool that can write, so the change
+# is someone else's. It is reported and the output is kept.
 before="$(cat "$DIR/1.md")"
+printf 'MARKER the old PRD\n' >> "$DIR/1.md"
 out="$(STUB_STRAY="$WORK/clones/demo" "$PASS" revise demo 1 --round 1 2>&1)"; rc=$?
 rm -f "$WORK/clones/demo/stray.txt"
-assert_eq "a stray write fails the pass" "1" "$rc"
-assert_contains "the gate says what it saw" "gate failed" "$out"
-assert_eq "a gated pass leaves the PRD alone" "$before" "$(cat "$DIR/1.md")"
+assert_eq "a tree change does not fail the pass" "0" "$rc"
+assert_contains "the tree change is named" "the tree changed during the revise pass" "$out"
+assert_contains "the tree change says what moved" "stray.txt" "$out"
+assert_eq "a changed tree keeps the output" "$before" "$(cat "$DIR/1.md")"
 
 # A model error is reported, not written.
 out="$(STUB_FAIL=1 "$PASS" revise demo 1 --round 1 2>&1)"; rc=$?
@@ -121,7 +124,7 @@ runs="$(wc -l < "$STUB_LOG" | tr -d ' ')"
 assert_eq "one ledger row per model run" "$runs" "$rows"
 crit="$(awk -F'\t' '$4 == "critique" && $5 == "1" { print $7, $8, $13, $17 }' "$LEDGER" | head -n1)"
 assert_eq "the ledger records model, effort, cost, outcome" "claude-opus-5 xhigh 0.25 ok" "$crit"
-assert_contains "the ledger records a gated run" "gate" "$(awk -F'\t' '{ print $17 }' "$LEDGER" | sort -u | tr '\n' ' ')"
+assert_eq "the ledger records only ok and error" "error ok " "$(awk -F'\t' 'NR > 1 { print $17 }' "$LEDGER" | sort -u | tr '\n' ' ')"
 assert_contains "the ledger records a failed run" "error" "$(awk -F'\t' '{ print $17 }' "$LEDGER" | sort -u | tr '\n' ' ')"
 assert_eq "the ledger counts denials" "1" "$(awk -F'\t' '$16 == "1"' "$LEDGER" | wc -l | tr -d ' ')"
 

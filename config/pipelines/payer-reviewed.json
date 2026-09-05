@@ -6,7 +6,7 @@
       "kind": "agent",
       "model": "sonnet",
       "effort": "medium",
-      "prompt": "Implement and commit the task on the current working branch. Run focused tests needed while developing. Do not run scripts/run_tests.sh; the next model-free stage owns that canonical suite. Do not push, open a pull request, or call factory update.\n\n{{ task.prompt }}"
+      "prompt": "Implement and commit the task on the current working branch. Run focused tests needed while developing. This repository's AGENTS.md asks for scripts/run_tests.sh before every commit; in this pipeline the next model-free stage runs that exact script against your commit, so do not run it yourself: commit once the focused tests are green and leave the canonical suite to that stage. Commit before you finish. Work left uncommitted in the tree is discarded, and the run ends as no-change. Do not push, open a pull request, or call factory update.\n\n{{ task.prompt }}"
     },
     {
       "name": "Verify",
